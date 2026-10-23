@@ -651,10 +651,20 @@ async def show_reports_prompt(event, data: dict):
 
 
 def _delay_prompt_text(data: dict) -> str:
+    rpm = int(data.get('reports_per_message') or 1)
+    msgs = len(data.get('messages') or [])
+    accs = _account_count(data)
+    ttype = data.get("target_type") or "channel_msgs"
+    is_peer = ttype in (
+        "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+        "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+    )
+    tot = _total_reports(data)
+    calc_note = f"({accs} accounts × {rpm} report)" if is_peer else f"({accs} accounts × {msgs} links × {rpm} per link)"
     return (
         "**Campaign Setup: 6 of 10 - Delay**\n\n"
-        f"Reports per link: {data.get('reports_per_message')}\n"
-        f"Reports per cycle: {_total_reports(data)}\n\n"
+        f"Reports per link (per account): {rpm}\n"
+        f"Total reports in cycle: {tot} {calc_note}\n\n"
         "Choose the delay between individual report requests. "
         "A longer delay reduces FloodWait errors."
     )
@@ -1107,8 +1117,10 @@ async def show_comment_prompt(event, data: dict):
         buttons.append([Button.inline("Set One Comment for All", b"cmp:comm_all")])
     else:
         buttons.append([Button.inline("Add Comment", b"cmp:comm_all")])
-    buttons.append([_btn_continue("No Comment - Continue", b"cmp:comm_done")])
-    buttons.append([Button.inline("No Comment (Clear All)", b"cmp:comment_no")])
+    has_any_comment = bool(data.get("comment")) or any(bool(c.get("comment")) for c in choices)
+    cont_text = "Continue" if has_any_comment else "No Comment - Continue"
+    buttons.append([_btn_continue(cont_text, b"cmp:comm_done")])
+    buttons.append([Button.inline("Clear Comments", b"cmp:comment_no")])
     buttons.append([_btn_back("Back", back), _cancel_button()])
     await _render(event, _comment_prompt_text(data), buttons=buttons)
 
