@@ -19,6 +19,7 @@ from handlers.report import (
     show_count_step,
     show_user_count_step,
     show_delay_step,
+    show_dist_mode_step,
     show_exec_mode_step,
     show_message_reason_step,
     show_peer_reason_step,
@@ -321,7 +322,11 @@ async def handle_report_delay(event, data: dict):
         await event.respond(f"Delay must be between {MIN_DELAY} and {MAX_DELAY} seconds")
         return
     data['delay'] = delay
-    await show_exec_mode_step(event, data, send=True, peer=False)
+    if len(data.get('messages', [])) > 1:
+        await show_dist_mode_step(event, data, send=True)
+    else:
+        data['dist_mode'] = 'round_robin'
+        await show_exec_mode_step(event, data, send=True, peer=False)
 
 async def handle_report_comment(event, data: dict):
     """Handle comment text input."""

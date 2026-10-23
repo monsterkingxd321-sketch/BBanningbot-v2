@@ -9,6 +9,7 @@ from handlers.report_ui import (
     count_buttons,
     scrape_buttons,
     delay_buttons,
+    dist_mode_buttons,
     exec_mode_buttons,
     comment_buttons,
     peer_reason_buttons,
@@ -281,6 +282,33 @@ async def show_delay_step(event, data: dict, send: bool = True):
         f"Target: `{data.get('target', '')}`"
     )
     await _send_or_edit(event, text, with_nav(delay_buttons()), send=send)
+
+
+async def show_dist_mode_step(event, data: dict, send: bool = True):
+    user_id = event.sender_id
+    db.set_user_state(user_id, "report_dist_mode", data)
+    num_msgs = len(data.get('messages', []))
+    total_accs = len(db.get_active_accounts()) or 1
+    rpm = int(data.get('reports_per_account') or 1)
+    
+    rr_tot = (num_msgs if total_accs <= num_msgs else total_accs) * rpm
+    all_tot = num_msgs * total_accs * rpm
+
+    text = (
+        "**Step 5/7 - Message Distribution**\n\n"
+        f"Target: `{data.get('target', '')}`\n"
+        f"Accounts: {total_accs}\n"
+        f"Messages: {num_msgs}\n"
+        f"Reports per account: {rpm}\n\n"
+        "Choose how accounts should report these messages:\n\n"
+        f"1. **1 Account per Message (Spread / Round-Robin)**\n"
+        f"Account 1 reports Message 1, Account 2 reports Message 2, etc.\n"
+        f"• **Total reports: {rr_tot}** (1 report per message)\n\n"
+        f"2. **All Accounts to All Messages (Mass)**\n"
+        f"Every active account reports every message link.\n"
+        f"• **Total reports: {all_tot}** ({total_accs} accs × {num_msgs} msgs)"
+    )
+    await _send_or_edit(event, text, with_nav(dist_mode_buttons(), back_data=b"back_to_delay"), send=send)
 
 
 async def show_exec_mode_step(event, data: dict, send: bool = True, peer: bool = False):

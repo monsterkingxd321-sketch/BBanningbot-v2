@@ -829,7 +829,7 @@ class ReportEngine:
         self, target: str, message_links: list, reports_per_account: int,
         delay: int, reason: str, comment: str, progress_message,
         allowed_phones=None, reason_option: str = "", reason_choices: list = None,
-        dist_mode: str = "all", account_rules: dict = None,
+        dist_mode: str = "round_robin", account_rules: dict = None,
         target_type: str = "channel_msgs"
     ):
         """Run complete report session sequentially."""
@@ -998,7 +998,7 @@ class ReportEngine:
                             f"**Reporting Progress (Sequential)**\n\n"
                             f"Account: {acc_idx + 1}/{total_accounts}\n"
                             f"Phone: {mask_phone(phone)}\n"
-                            f"Message: {msg_idx + 1}/{len(message_links)}\n"
+                            f"Message: {msg_idx + 1}/{len(acc_items)}\n"
                             f"Reports: {report_num + 1}/{reports_per_account}\n\n"
                             f"{progress_bar}\n\n"
                             f"Success: {success_count}\n"
@@ -1056,7 +1056,7 @@ class ReportEngine:
         self, target: str, message_links: list, reports_per_account: int,
         reason: str, comment: str, progress_message,
         allowed_phones=None, reason_option: str = "", reason_choices: list = None,
-        dist_mode: str = "all", account_rules: dict = None,
+        dist_mode: str = "round_robin", account_rules: dict = None,
         target_type: str = "channel_msgs"
     ):
         """Run complete report session concurrently (Turbo Mode)."""

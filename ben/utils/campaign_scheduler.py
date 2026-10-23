@@ -137,7 +137,7 @@ class CampaignScheduler:
                 engine.should_stop = True
 
             allowed = selected_phones or None
-            dist_mode = campaign.get("dist_mode") or "all"
+            dist_mode = campaign.get("dist_mode") or "round_robin"
             account_rules = campaign.get("account_rules") or {}
             target_type = campaign.get("target_type") or "channel_msgs"
             if campaign.get("exec_mode") == "turbo":

@@ -147,7 +147,7 @@ def _total_reports(data: dict) -> int:
     msgs = len(data.get("messages") or [])
     rpm = int(data.get("reports_per_message") or 1)
     accs = max(1, _account_count(data))
-    dist = data.get("dist_mode") or "auto_distribute"
+    dist = data.get("dist_mode") or "round_robin"
     target_type = data.get("target_type") or "channel_msgs"
     is_peer = target_type in (
         "channel_peer", "channel_pfp", "group_peer", "group_pfp",
@@ -703,8 +703,8 @@ def _dist_prompt_text(data: dict) -> str:
 
 async def show_dist_prompt(event, data: dict):
     buttons = [
+        [_btn_continue("1 Account per Link (Round-Robin / Spread)", b"cmp:dist:round_robin")],
         [Button.inline("All Accounts to All Links (Full Mass)", b"cmp:dist:all")],
-        [Button.inline("1 Account per Link (Round-Robin)", b"cmp:dist:round_robin")],
         [Button.inline("Back", b"cmp:back_delay"), _cancel_button()],
     ]
     await _render(event, _dist_prompt_text(data), buttons=buttons)
@@ -1650,13 +1650,14 @@ async def show_wizard_account_assignment_menu(event, data: dict):
     choices = _reason_choices(data)
     rules = data.get("account_rules") or {}
     msgs = data.get("messages") or []
-    dist_mode = data.get("dist_mode") or "all"
+    dist_mode = data.get("dist_mode") or "round_robin"
 
     text = (
         "**Campaign Setup: 8 of 11 - Account Assignment & Distribution**\n\n"
         f"Selected Reasons: {len(choices)}\n"
         f"Available Accounts: {len(accounts)}\n"
         f"Message Links: {len(msgs)}\n"
+        f"Active Distribution: {_dist_text(dist_mode)}\n"
         f"Custom Rules Assigned: {len(rules)}\n\n"
         "Choose how accounts will report this target:\n\n"
         "1. **Spread 1 Account per Message (Total = 1 per msg)**\n"
@@ -1669,13 +1670,14 @@ async def show_wizard_account_assignment_menu(event, data: dict):
         "Manually specify exactly which account reports which reason or which message links."
     )
     buttons = [
-        [Button.inline("1 Account per Message (Round-Robin)", b"cmp:wiz_ar_mode:rr")],
-        [Button.inline("Auto-Distribute Reasons Across Accounts", b"cmp:wiz_ar_mode:split")],
-        [_btn_continue("All Accounts Report All Messages (Mass)", b"cmp:wiz_ar_mode:all")],
+        [Button.inline(f"{'[Active] ' if dist_mode == 'round_robin' else ''}1 Account per Message (Round-Robin)", b"cmp:wiz_ar_mode:rr")],
+        [Button.inline(f"{'[Active] ' if dist_mode in ('auto_distribute', 'split') else ''}Auto-Distribute Reasons Across Accounts", b"cmp:wiz_ar_mode:split")],
+        [Button.inline(f"{'[Active] ' if dist_mode == 'all' else ''}All Accounts Report All Messages (Mass)", b"cmp:wiz_ar_mode:all")],
         [Button.inline(f"Custom Account Assignment ({len(rules)} custom)", b"cmp:wiz_ar_menu")],
     ]
     if rules:
         buttons.append([Button.inline("Reset / Clear Custom Rules", b"cmp:wiz_ar_clear")])
+    buttons.append([_btn_continue("Continue to Comments", b"cmp:wiz_ar_continue")])
     buttons.append([_btn_back("Back to Reasons", b"cmp:back_rchoices"), _cancel_button()])
     await _render(event, text, buttons=buttons)
 
@@ -1974,7 +1976,7 @@ async def show_edit_dist_menu(event, campaign_id: int):
         await _render(event, "Campaign not found.",
                       buttons=[[Button.inline("Campaigns", b"cmp:list:0"), _main_button()]])
         return
-    dist_mode = campaign.get("dist_mode") or "all"
+    dist_mode = campaign.get("dist_mode") or "round_robin"
     msgs = len(campaign.get("messages") or [])
     accs = len(campaign.get("account_phones") or []) or len(db.get_active_accounts())
     rpm = int(campaign.get("reports_per_message") or 2)
@@ -2142,7 +2144,7 @@ async def create_campaign(event, user_id: int, data: dict, start_now: bool = Fal
         "reports_per_message": max(1, int(data.get("reports_per_message") or CAMPAIGN_DEFAULT_REPORTS_PER_MESSAGE)),
         "delay_seconds": int(data.get("delay") or 5),
         "exec_mode": "safe",
-        "dist_mode": data.get("dist_mode") or "all",
+        "dist_mode": data.get("dist_mode") or "round_robin",
         "account_rules": data.get("account_rules") or {},
         "reason": first.get("reason") or "spam",
         "reason_detail": first.get("detail") or "",
@@ -3117,7 +3119,23 @@ async def handle_campaign_callback(event, data: str):
             await show_dist_prompt(event, flow)
             return
         if action == "dist":
-            flow["dist_mode"] = arg or "all"
+            flow["dist_mode"] = arg or "round_robin"
+            if flow["dist_mode"] in ("round_robin", "rr"):
+                flow["dist_mode"] = "round_robin"
+                accs = _get_flow_accounts(flow)
+                msgs = flow.get("messages") or []
+                choices = _reason_choices(flow)
+                if accs and msgs:
+                    rules = dict(flow.get("account_rules") or {})
+                    for idx, acc in enumerate(accs):
+                        phone = acc[1]
+                        c = choices[idx % len(choices)] if choices else None
+                        rules[phone] = {
+                            "reasons": [c] if c else [],
+                            "messages": [idx] if idx < len(msgs) else [idx % len(msgs)],
+                            "comment": c.get("comment") or flow.get("comment") or "" if c else ""
+                        }
+                    flow["account_rules"] = rules
             flow["step"] = "reason"
             _save_flow(user_id, flow)
             await show_reason_prompt(event, flow)
@@ -3220,7 +3238,7 @@ async def handle_campaign_callback(event, data: str):
             await show_wizard_account_rules_menu(event, flow)
             return
 
-        if action == "wiz_ar_done":
+        if action in ("wiz_ar_done", "wiz_ar_continue"):
             flow["step"] = "comment"
             _save_flow(user_id, flow)
             await show_comment_prompt(event, flow)

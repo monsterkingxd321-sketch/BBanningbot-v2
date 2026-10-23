@@ -22,6 +22,7 @@ from handlers.report import (
     show_manual_entry,
     run_scrape_flow,
     show_delay_step,
+    show_dist_mode_step,
     show_exec_mode_step,
     show_comment_choice,
     show_message_reason_step,
@@ -168,7 +169,36 @@ async def _route_callback(event, user_id: int, data: str):
             await event.answer("Invalid delay.", alert=True)
             return
         data_state['delay'] = delay
+        if len(data_state.get('messages', [])) > 1:
+            await show_dist_mode_step(event, data_state, send=False)
+        else:
+            data_state['dist_mode'] = 'round_robin'
+            await show_exec_mode_step(event, data_state, send=False, peer=False)
+        return
+
+    if data in ("dist_mode_rr", "dist_mode_all"):
+        state, data_state = db.get_user_state(user_id)
+        if not data_state:
+            await event.edit("Session expired. Start again from the menu.")
+            return
+        data_state['dist_mode'] = 'round_robin' if data == "dist_mode_rr" else 'all'
         await show_exec_mode_step(event, data_state, send=False, peer=False)
+        return
+
+    if data == "back_to_dist":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state:
+            await event.edit("Session expired. Start again from the menu.")
+            return
+        await show_dist_mode_step(event, data_state, send=False)
+        return
+
+    if data == "back_to_delay":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state:
+            await event.edit("Session expired. Start again from the menu.")
+            return
+        await show_delay_step(event, data_state, send=False)
         return
 
     if data == "ui_custom_count":
@@ -710,13 +740,23 @@ async def confirm_report(event, reason: str):
         )
         return
 
-    total_reports = total_accounts * data['reports_per_account'] * len(data['messages'])
+    dist_mode = data.get('dist_mode', 'round_robin')
+    rpm = int(data.get('reports_per_account') or 1)
+    msgs = data.get('messages') or []
+    if dist_mode == "round_robin" and msgs:
+        total_assigned = len(msgs) if total_accounts <= len(msgs) else total_accounts
+        total_reports = total_assigned * rpm
+        dist_label = "1 Account per Message (Spread / Round-Robin)"
+    else:
+        total_reports = total_accounts * rpm * len(msgs)
+        dist_label = "All Accounts to All Messages (Mass)"
     reason_text = reason_display(reason, data.get('reason_detail'))
 
     confirm_text = (
         f"**Report Summary**\n\n"
         f"Target: `{data['target']}`\n"
         f"Messages to report: {len(data['messages'])}\n"
+        f"Distribution: {dist_label}\n"
         f"Reports per account: {data['reports_per_account']}\n"
         f"Execution mode: {data.get('exec_mode', 'safe').capitalize()}\n"
         f"Estimated reports: {total_reports}\n"
@@ -796,6 +836,7 @@ async def start_report_session(event):
 
     try:
         exec_mode = data.get('exec_mode', 'safe')
+        dist_mode = data.get('dist_mode', 'round_robin')
         if exec_mode == 'turbo':
             await engine.run_parallel_report_session(
                 target=data['target'],
@@ -806,6 +847,7 @@ async def start_report_session(event):
                 progress_message=progress_message,
                 allowed_phones=allowed_phones,
                 reason_option=data.get('reason_option') or '',
+                dist_mode=dist_mode,
             )
         else:
             await engine.run_report_session(
@@ -818,6 +860,7 @@ async def start_report_session(event):
                 progress_message=progress_message,
                 allowed_phones=allowed_phones,
                 reason_option=data.get('reason_option') or '',
+                dist_mode=dist_mode,
             )
     except Exception as exc:
         error = redact_sensitive(exc, 300)

@@ -103,6 +103,13 @@ def delay_buttons():
     return rows
 
 
+def dist_mode_buttons():
+    return [
+        [btn_continue("1 Account per Message (Spread / Round-Robin)", b"dist_mode_rr")],
+        [Button.inline("All Accounts to All Messages (Mass)", b"dist_mode_all")],
+    ]
+
+
 def exec_mode_buttons(peer: bool = False):
     prefix = b"peer_exec_mode_" if peer else b"exec_mode_"
     return [
