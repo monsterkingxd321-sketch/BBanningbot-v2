@@ -148,6 +148,7 @@ def _total_reports(data: dict) -> int:
     rpm = int(data.get("reports_per_message") or 1)
     accs = max(1, _account_count(data))
     dist = data.get("dist_mode") or "auto_distribute"
+    target_type = data.get("target_type") or "channel_msgs"
     is_peer = target_type in (
         "channel_peer", "channel_pfp", "group_peer", "group_pfp",
         "account_profile", "account_pfp", "bot_profile", "bot_pfp"
