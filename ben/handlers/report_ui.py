@@ -157,9 +157,21 @@ def report_option_buttons(options, prefix: str = "reason_opt", per_row: int = 2)
     return rows
 
 
-def nav_buttons():
-    return [[Button.inline("Main Menu", b"menu:home")]]
+def btn_continue(text: str = "Continue", data: bytes = b"continue") -> Button:
+    return Button.inline(text, data, style="success")
 
 
-def with_nav(rows):
-    return list(rows) + nav_buttons()
+def btn_back(text: str = "Back", data: bytes = b"back") -> Button:
+    return Button.inline(text, data, style="danger")
+
+
+def nav_buttons(back_data: bytes = None):
+    rows = []
+    if back_data:
+        rows.append([btn_back("Back", back_data)])
+    rows.append([Button.inline("Main Menu", b"menu:home")])
+    return rows
+
+
+def with_nav(rows, back_data: bytes = None):
+    return list(rows) + nav_buttons(back_data)

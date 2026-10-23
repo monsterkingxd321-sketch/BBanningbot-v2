@@ -222,6 +222,8 @@ async def ensure_account_joined(client: TelegramClient, target: str) -> tuple:
         if kind == "username":
             try:
                 entity = await client.get_entity(value)
+                if isinstance(entity, types.User):
+                    return
             except Exception:
                 # Joining by username can still work when entity resolution is
                 # temporarily unavailable.
@@ -751,16 +753,84 @@ class ReportEngine:
                     log_activity(f"Peer report execution error: {str(e)}")
                     return False
             return False
-            
         except Exception as e:
             log_activity(f"Report peer error for {peer_id}: {str(e)}")
             return False
-    
+
+    async def report_profile_photo(
+        self, client: TelegramClient, peer_id: str, reason: str, comment: str = ""
+    ) -> bool:
+        """Report profile photo of a user, group, or channel."""
+        try:
+            try:
+                entity = await client.get_entity(peer_id)
+            except Exception as e:
+                log_activity(f"Failed to get entity for photo report {peer_id}: {str(e)}")
+                return False
+
+            from telethon.tl.functions.account import ReportProfilePhotoRequest
+            from telethon.errors import FloodWaitError
+
+            photos = await client.get_profile_photos(entity, limit=1)
+            if not photos:
+                log_activity(f"No profile photo found for {peer_id}; falling back to peer report")
+                return await self.report_peer(client, peer_id, reason, comment)
+
+            photo = photos[0]
+            input_photo = types.InputPhoto(
+                id=photo.id,
+                access_hash=photo.access_hash,
+                file_reference=photo.file_reference,
+            )
+
+            reason_obj = types.InputReportReasonSpam()
+            if reason == "child_abuse":
+                reason_obj = types.InputReportReasonChildAbuse()
+            elif reason == "violence":
+                reason_obj = types.InputReportReasonViolence()
+            elif reason in ("illegal_drugs", "illegal_activities"):
+                reason_obj = types.InputReportReasonIllegalDrugs()
+            elif reason == "pornography":
+                reason_obj = types.InputReportReasonPornography()
+            elif reason in ("fake", "scam"):
+                reason_obj = types.InputReportReasonFake()
+            elif reason == "personal_details":
+                reason_obj = types.InputReportReasonPersonalDetails()
+            elif reason == "copyright":
+                reason_obj = types.InputReportReasonCopyright()
+            elif reason == "geo_irrelevant":
+                reason_obj = types.InputReportReasonGeoIrrelevant()
+            elif reason == "other":
+                reason_obj = types.InputReportReasonOther()
+
+            for attempt in range(2):
+                try:
+                    await client(ReportProfilePhotoRequest(
+                        peer=entity,
+                        photo_id=input_photo,
+                        reason=reason_obj,
+                        message=comment or ""
+                    ))
+                    return True
+                except FloodWaitError as fe:
+                    log_activity(f"FloodWait on profile photo report: waiting {fe.seconds}s")
+                    if fe.seconds > 10:
+                        return False
+                    await asyncio.sleep(fe.seconds)
+                except Exception as e:
+                    log_activity(f"Profile photo report execution error: {str(e)}")
+                    return await self.report_peer(client, peer_id, reason, comment)
+            return False
+        except Exception as e:
+            log_activity(f"Report profile photo error for {peer_id}: {str(e)}")
+            return False
+
     async def run_report_session(
         self, target: str, message_links: list, reports_per_account: int,
         delay: int, reason: str, comment: str, progress_message,
         allowed_phones=None, reason_option: str = "", reason_choices: list = None,
-        dist_mode: str = "all", account_rules: dict = None
+        dist_mode: str = "all", account_rules: dict = None,
+        target_type: str = "channel_msgs"
     ):
         """Run complete report session sequentially."""
         active_accounts = db.get_active_accounts()
@@ -791,6 +861,8 @@ class ReportEngine:
                 else:
                     a_count = 1
                 total_assigned += a_count
+            elif dist_mode in ("auto_distribute", "split"):
+                total_assigned += 1 if not message_links else len(items_list)
             else:
                 total_assigned += len(items_list)
         total_reports = total_assigned * reports_per_account
@@ -820,11 +892,14 @@ class ReportEngine:
                 # Set account status to ONLINE
                 await set_account_online(client, offline=False)
 
-                joined, join_message = await ensure_account_joined(client, target)
-                if not joined:
-                    log_activity(f"Account {phone} not joined to {target}; skipping: {join_message}")
-                    continue
-                log_activity(f"Account {phone} joined {target} ({join_message})")
+                if target_type in ("account_profile", "account_pfp", "bot_profile", "bot_pfp"):
+                    log_activity(f"Account {phone} targeting user/bot profile {target} (no join needed)")
+                else:
+                    joined, join_message = await ensure_account_joined(client, target)
+                    if not joined:
+                        log_activity(f"Account {phone} not joined to {target}; skipping: {join_message}")
+                        continue
+                    log_activity(f"Account {phone} joined {target} ({join_message})")
 
                 a_rule = (account_rules or {}).get(phone) or {}
                 if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
@@ -856,24 +931,21 @@ class ReportEngine:
 
                         if a_rule.get("reasons"):
                             choices = a_rule.get("reasons")
+                        elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
+                            choices = [reason_choices[acc_idx % len(reason_choices)]]
                         else:
                             choices = reason_choices or []
 
                         if len(choices) >= 2:
                             choice = choices[report_num % len(choices)]
                         elif len(choices) == 1:
-                            if report_num % 2 == 0:
-                                choice = choices[0]
-                            else:
-                                primary_r = (choices[0].get("reason") or "").lower()
-                                sec_r = "fake" if "spam" in primary_r else ("violence" if "fake" in primary_r else "spam")
-                                choice = {"reason": sec_r, "detail": "Fake / Scam" if sec_r == "fake" else sec_r.capitalize(), "option": ""}
+                            choice = choices[0]
                         else:
-                            types_cycle = [
-                                {"reason": reason or "spam", "detail": (reason or "spam").capitalize(), "option": reason_option or ""},
-                                {"reason": "fake" if reason != "fake" else "violence", "detail": "Fake / Scam", "option": ""}
-                            ]
-                            choice = types_cycle[report_num % 2]
+                            choice = {
+                                "reason": reason or "spam",
+                                "detail": (reason or "spam").capitalize(),
+                                "option": reason_option or "",
+                            }
                         report_reason = choice.get("reason") or reason or "spam"
                         report_option = choice.get("option") or reason_option or ""
                         report_label = choice.get("detail") or report_reason
@@ -892,14 +964,18 @@ class ReportEngine:
                             else:
                                 report_comment = ""
 
-                        if message_link:
+                        if target_type in ("channel_pfp", "group_pfp", "account_pfp", "bot_pfp"):
+                            success = await self.report_profile_photo(
+                                client, target, report_reason, report_comment
+                            )
+                        elif target_type in ("channel_peer", "group_peer", "account_profile", "bot_profile") or not message_link:
+                            success = await self.report_peer(
+                                client, target, report_reason, report_comment
+                            )
+                        else:
                             success = await self.report_message(
                                 client, target, message_link, report_reason, report_comment,
                                 report_option
-                            )
-                        else:
-                            success = await self.report_peer(
-                                client, target, report_reason, report_comment
                             )
 
                         log_item = message_link or target
@@ -980,7 +1056,8 @@ class ReportEngine:
         self, target: str, message_links: list, reports_per_account: int,
         reason: str, comment: str, progress_message,
         allowed_phones=None, reason_option: str = "", reason_choices: list = None,
-        dist_mode: str = "all", account_rules: dict = None
+        dist_mode: str = "all", account_rules: dict = None,
+        target_type: str = "channel_msgs"
     ):
         """Run complete report session concurrently (Turbo Mode)."""
         active_accounts = db.get_active_accounts()
@@ -1011,6 +1088,8 @@ class ReportEngine:
                 else:
                     a_count = 1
                 total_assigned += a_count
+            elif dist_mode in ("auto_distribute", "split"):
+                total_assigned += 1 if not message_links else len(items_list)
             else:
                 total_assigned += len(items_list)
         total_reports = total_assigned * reports_per_account
@@ -1067,10 +1146,13 @@ class ReportEngine:
                 # Set account status to ONLINE
                 await set_account_online(client, offline=False)
 
-                joined, join_message = await ensure_account_joined(client, target)
-                if not joined:
-                    log_activity(f"[Worker {phone}] Not joined to {target}; skipping: {join_message}")
-                    return
+                if target_type in ("account_profile", "account_pfp", "bot_profile", "bot_pfp"):
+                    log_activity(f"[Worker {phone}] Targeting user/bot profile {target} (no join needed)")
+                else:
+                    joined, join_message = await ensure_account_joined(client, target)
+                    if not joined:
+                        log_activity(f"[Worker {phone}] Not joined to {target}; skipping: {join_message}")
+                        return
 
                 a_rule = (account_rules or {}).get(phone) or {}
                 if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
@@ -1102,24 +1184,21 @@ class ReportEngine:
 
                         if a_rule.get("reasons"):
                             choices = a_rule.get("reasons")
+                        elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
+                            choices = [reason_choices[account_idx % len(reason_choices)]]
                         else:
                             choices = reason_choices or []
 
                         if len(choices) >= 2:
                             choice = choices[report_num % len(choices)]
                         elif len(choices) == 1:
-                            if report_num % 2 == 0:
-                                choice = choices[0]
-                            else:
-                                primary_r = (choices[0].get("reason") or "").lower()
-                                sec_r = "fake" if "spam" in primary_r else ("violence" if "fake" in primary_r else "spam")
-                                choice = {"reason": sec_r, "detail": "Fake / Scam" if sec_r == "fake" else sec_r.capitalize(), "option": ""}
+                            choice = choices[0]
                         else:
-                            types_cycle = [
-                                {"reason": reason or "spam", "detail": (reason or "spam").capitalize(), "option": reason_option or ""},
-                                {"reason": "fake" if reason != "fake" else "violence", "detail": "Fake / Scam", "option": ""}
-                            ]
-                            choice = types_cycle[report_num % 2]
+                            choice = {
+                                "reason": reason or "spam",
+                                "detail": (reason or "spam").capitalize(),
+                                "option": reason_option or "",
+                            }
                         report_reason = choice.get("reason") or reason or "spam"
                         report_option = choice.get("option") or reason_option or ""
                         report_label = choice.get("detail") or report_reason
@@ -1138,14 +1217,18 @@ class ReportEngine:
                             else:
                                 report_comment = ""
 
-                        if message_link:
+                        if target_type in ("channel_pfp", "group_pfp", "account_pfp", "bot_pfp"):
+                            success = await self.report_profile_photo(
+                                client, target, report_reason, report_comment
+                            )
+                        elif target_type in ("channel_peer", "group_peer", "account_profile", "bot_profile") or not message_link:
+                            success = await self.report_peer(
+                                client, target, report_reason, report_comment
+                            )
+                        else:
                             success = await self.report_message(
                                 client, target, message_link, report_reason, report_comment,
                                 report_option
-                            )
-                        else:
-                            success = await self.report_peer(
-                                client, target, report_reason, report_comment
                             )
 
                         log_item = message_link or target

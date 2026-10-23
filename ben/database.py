@@ -211,14 +211,14 @@ class Database:
                 for c in mongo_campaigns:
                     cursor.execute('''
                         INSERT OR REPLACE INTO report_campaigns (
-                            id, name, target, account_phones, messages, reports_per_message,
+                            id, name, target, target_type, account_phones, messages, reports_per_message,
                             delay_seconds, exec_mode, dist_mode, account_rules, reason, reason_detail, reason_option,
                             reason_choices, comment, interval_hours, duration_hours, max_cycles,
                             cycle_count, status, next_run_at, ends_at, created_by, created_at,
                             last_run_at, last_result
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        c.get("id"), c.get("name"), c.get("target"),
+                        c.get("id"), c.get("name"), c.get("target"), c.get("target_type", "channel_msgs"),
                         _to_json_str(c.get("account_phones"), []),
                         _to_json_str(c.get("messages"), []),
                         c.get("reports_per_message", 2), c.get("delay_seconds", 5),
@@ -525,6 +525,7 @@ class Database:
             ('ends_at', 'TEXT'),
             ('dist_mode', "TEXT DEFAULT 'all'"),
             ('account_rules', "TEXT DEFAULT '{}'"),
+            ('target_type', "TEXT DEFAULT 'channel_msgs'"),
         ]:
             self._ensure_column(cursor, 'report_campaigns', col, col_type)
 
@@ -2056,15 +2057,16 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO report_campaigns
-                (name, target, account_phones, messages, reports_per_message,
+                (name, target, target_type, account_phones, messages, reports_per_message,
                  delay_seconds, exec_mode, dist_mode, account_rules, reason, reason_detail, reason_option,
                  reason_choices, comment, interval_hours, duration_hours, max_cycles,
                  cycle_count, status, next_run_at, ends_at, created_by, created_at,
                  last_run_at, last_result)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, NULL, NULL)
         ''', (
             data.get('name') or '',
             data['target'],
+            data.get('target_type') or 'channel_msgs',
             json.dumps(data.get('account_phones') or []),
             json.dumps(data.get('messages') or []),
             int(data.get('reports_per_message') or 2),
@@ -2110,6 +2112,7 @@ class Database:
         except (TypeError, ValueError):
             campaign['account_rules'] = {}
         campaign['dist_mode'] = campaign.get('dist_mode') or 'all'
+        campaign['target_type'] = campaign.get('target_type') or 'channel_msgs'
         return campaign
 
     def get_report_campaign(self, campaign_id: int):
@@ -2153,7 +2156,7 @@ class Database:
     @db_write_lock
     def update_report_campaign(self, campaign_id: int, **fields) -> bool:
         allowed = {
-            'name', 'target', 'account_phones', 'messages', 'reports_per_message',
+            'name', 'target', 'target_type', 'account_phones', 'messages', 'reports_per_message',
             'delay_seconds', 'exec_mode', 'dist_mode', 'account_rules', 'reason', 'reason_detail',
             'reason_option', 'reason_choices', 'comment', 'interval_hours', 'duration_hours',
             'max_cycles', 'cycle_count',

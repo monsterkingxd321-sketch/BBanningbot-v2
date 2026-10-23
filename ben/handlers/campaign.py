@@ -62,13 +62,45 @@ def _cancel_button():
     return Button.inline("Cancel", b"cmp:cancel")
 
 
+def _btn_continue(text: str = "Continue", data: bytes = b"cmp:continue") -> Button:
+    return Button.inline(text, data, style="success")
+
+
+def _btn_back(text: str = "Back", data: bytes = b"cmp:back") -> Button:
+    return Button.inline(text, data, style="danger")
+
+
+TARGET_CATEGORIES = {
+    "channel": "Channel",
+    "group": "Group",
+    "account": "Account / User",
+    "bot": "Bot",
+}
+
+TARGET_TYPE_LABELS = {
+    "channel_msgs": "Channel Messages (Posts)",
+    "channel_peer": "Whole Channel Profile",
+    "channel_pfp": "Channel Profile Photo (PFP)",
+    "group_msgs": "Group Messages",
+    "group_peer": "Whole Group Profile / Bio",
+    "group_pfp": "Group Profile Photo (PFP)",
+    "user_in_group": "User Message in Group",
+    "account_profile": "User Profile (Bio / Peer)",
+    "account_pfp": "User Profile Photo (PFP)",
+    "bot_profile": "Bot Profile / Account",
+    "bot_pfp": "Bot Profile Photo (PFP)",
+    "bot_msgs": "Bot Messages / PM Post",
+    "bot_in_group": "Bot Message in Group",
+}
+
+
 def _campaign_buttons(user_id: int = None):
     buttons = []
     if user_id:
         draft = _get_flow(user_id)
         if draft and (draft.get("target") or draft.get("messages")) and draft.get("step") != "name":
             target_name = draft.get("name") or draft.get("target") or "Draft"
-            buttons.append([Button.inline(f"Resume Draft ({target_name[:20]})", b"cmp:resume_draft")])
+            buttons.append([_btn_continue(f"Resume Draft ({target_name[:20]})", b"cmp:resume_draft")])
     buttons.append([Button.inline("New Campaign", b"cmp:new")])
     buttons.append([Button.inline("My Campaigns", b"cmp:list:0"),
          Button.inline("Report Options", b"cmp:options")])
@@ -102,21 +134,47 @@ def _account_count(data: dict) -> int:
 
 
 def _dist_text(dist_mode: str) -> str:
-    if dist_mode == "round_robin":
+    if dist_mode in ("auto_distribute", "split"):
+        return "Auto-Distribute (Balanced across accounts - 1 report each)"
+    elif dist_mode == "custom":
+        return "Custom Account Rules (Specific assignments)"
+    elif dist_mode == "round_robin":
         return "1 account per link (Round-Robin)"
     return "All accounts to all links (Full Mass)"
 
 
 def _total_reports(data: dict) -> int:
     msgs = len(data.get("messages") or [])
-    rpm = int(data.get("reports_per_message") or CAMPAIGN_DEFAULT_REPORTS_PER_MESSAGE)
+    rpm = int(data.get("reports_per_message") or 1)
     accs = max(1, _account_count(data))
-    dist = data.get("dist_mode") or "all"
-    if dist == "round_robin" and msgs > 0:
+    dist = data.get("dist_mode") or "auto_distribute"
+    is_peer = target_type in (
+        "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+        "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+    )
+
+    if dist in ("auto_distribute", "split"):
+        if is_peer:
+            return accs * rpm
+        else:
+            return (msgs if msgs > 0 else 1) * accs * rpm
+    elif dist == "custom":
+        rules = data.get("account_rules") or {}
+        tot = 0
+        active_phones = data.get("selected_phones") or [a[1] for a in db.get_active_accounts()]
+        for phone in active_phones:
+            rule = rules.get(phone) or {}
+            m = rule.get("messages")
+            if m and isinstance(m, list) and not is_peer:
+                tot += len(m) * rpm
+            else:
+                tot += (msgs if (msgs > 0 and not is_peer) else 1) * rpm
+        return tot or (accs * rpm)
+    elif dist == "round_robin" and msgs > 0 and not is_peer:
         total_assigned = msgs if accs <= msgs else accs
         return total_assigned * rpm
     else:
-        return (msgs if msgs > 0 else 1) * rpm * accs
+        return (msgs if (msgs > 0 and not is_peer) else 1) * rpm * accs
 
 
 def _interval_text(hours) -> str:
@@ -241,18 +299,17 @@ async def show_report_options(event, back_data: bytes = None):
 
 def _name_prompt():
     return (
-        "**Campaign Setup: 1 of 10 - Name**\n\n"
+        "**Campaign Setup: Step 1 - Name**\n\n"
         "Send a name for this campaign, or skip to use the target as the name.\n\n"
-        "The wizard then asks for the target channel, accounts, message links, "
-        "reports per link, delay, main reason, sub-option, comment, repeat "
-        "interval and total run duration."
+        "The wizard then asks what to report (channel / group / account), "
+        "the target, report reasons, accounts, and scheduling."
     )
 
 
 async def show_name_prompt(event, send: bool = True):
     buttons = [
-        [Button.inline("Skip Name", b"cmp:name_skip")],
-        [_cancel_button()],
+        [_btn_continue("Skip Name", b"cmp:name_skip")],
+        [_btn_back("Back to Campaigns", b"cmp:menu")],
     ]
     if send:
         await event.respond(_name_prompt(), buttons=buttons)
@@ -260,24 +317,162 @@ async def show_name_prompt(event, send: bool = True):
         await _render(event, _name_prompt(), buttons=buttons)
 
 
-def _target_prompt(data: dict):
+# ── Target Category (Channel / Group / Account) ──────────────────────────────
+
+async def show_target_category_prompt(event, data: dict):
+    """Ask what kind of target: channel, group, or account."""
     name = data.get("name") or "Untitled campaign"
-    return (
-        f"**Campaign Setup: 2 of 10 - Target**\n\nCampaign: {name}\n\n"
-        "Send the target channel username or link.\n"
-        "Examples: `@channel_name`, `https://t.me/channel_name`, "
-        "or a private invite link the selected account can join."
+    data["step"] = "target_cat"
+    _save_flow(event.sender_id, data)
+    text = (
+        f"**Campaign Setup: Step 2 - Target Type**\n\nCampaign: {name}\n\n"
+        "What are you reporting?"
     )
+    buttons = [
+        [Button.inline("Channel", b"cmp:tcat:channel")],
+        [Button.inline("Group", b"cmp:tcat:group")],
+        [Button.inline("Account / User", b"cmp:tcat:account")],
+        [Button.inline("Bot", b"cmp:tcat:bot")],
+        [_btn_back("Back to Name", b"cmp:name_edit")],
+    ]
+    await _render(event, text, buttons=buttons)
+
+
+async def show_target_type_prompt(event, data: dict):
+    """Ask the specific target sub-type based on the chosen category."""
+    cat = data.get("target_cat") or "channel"
+    name = data.get("name") or "Untitled campaign"
+    data["step"] = "target_type"
+    _save_flow(event.sender_id, data)
+    text = (
+        f"**Campaign Setup: Step 3 - Report Type**\n\nCampaign: {name}\n"
+        f"Category: {TARGET_CATEGORIES.get(cat, cat)}\n\n"
+        "Choose what exactly to report:"
+    )
+    if cat == "channel":
+        buttons = [
+            [Button.inline("Channel Messages (Posts)", b"cmp:ttype:channel_msgs")],
+            [Button.inline("Whole Channel Profile", b"cmp:ttype:channel_peer")],
+            [Button.inline("Channel Profile Photo (PFP)", b"cmp:ttype:channel_pfp")],
+            [_btn_back("Back", b"cmp:back_tcat")],
+        ]
+    elif cat == "group":
+        buttons = [
+            [Button.inline("Group Messages", b"cmp:ttype:group_msgs")],
+            [Button.inline("Whole Group Profile / Bio", b"cmp:ttype:group_peer")],
+            [Button.inline("Group Profile Photo (PFP)", b"cmp:ttype:group_pfp")],
+            [Button.inline("User Message in Group", b"cmp:ttype:user_in_group")],
+            [Button.inline("Bot Message in Group", b"cmp:ttype:bot_in_group")],
+            [_btn_back("Back", b"cmp:back_tcat")],
+        ]
+    elif cat == "bot":
+        buttons = [
+            [Button.inline("Bot Profile / Account", b"cmp:ttype:bot_profile")],
+            [Button.inline("Bot Profile Photo (PFP)", b"cmp:ttype:bot_pfp")],
+            [Button.inline("Bot Messages / Direct PM", b"cmp:ttype:bot_msgs")],
+            [Button.inline("Bot Message in Group", b"cmp:ttype:bot_in_group")],
+            [_btn_back("Back", b"cmp:back_tcat")],
+        ]
+    else:  # account
+        buttons = [
+            [Button.inline("User Profile (Bio / Peer)", b"cmp:ttype:account_profile")],
+            [Button.inline("User Profile Photo (PFP)", b"cmp:ttype:account_pfp")],
+            [Button.inline("User Message in Group", b"cmp:ttype:user_in_group")],
+            [_btn_back("Back", b"cmp:back_tcat")],
+        ]
+    await _render(event, text, buttons=buttons)
+
+
+def _target_prompt_text(data: dict) -> str:
+    """Build appropriate target prompt text based on target_type."""
+    name = data.get("name") or "Untitled campaign"
+    ttype = data.get("target_type") or "channel_msgs"
+    label = TARGET_TYPE_LABELS.get(ttype, ttype)
+    step = "Step 4"
+    if ttype == "channel_msgs":
+        return (
+            f"**Campaign Setup: {step} - Target Channel**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the channel username or link.\n"
+            "Examples: `@channel_name`, `https://t.me/channel_name`"
+        )
+    elif ttype in ("channel_peer", "channel_pfp"):
+        return (
+            f"**Campaign Setup: {step} - Target Channel**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the channel username or link.\n"
+            "Examples: `@channel_name`, `https://t.me/channel_name`"
+        )
+    elif ttype == "group_msgs":
+        return (
+            f"**Campaign Setup: {step} - Target Group**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the group username or invite link.\n"
+            "Examples: `@group_name`, `https://t.me/+invitehash`"
+        )
+    elif ttype in ("group_peer", "group_pfp"):
+        return (
+            f"**Campaign Setup: {step} - Target Group**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the group username or invite link.\n"
+            "Examples: `@group_name`, `https://t.me/+invitehash`"
+        )
+    elif ttype in ("user_in_group", "bot_in_group"):
+        who = "Bot" if ttype == "bot_in_group" else "User"
+        return (
+            f"**Campaign Setup: {step} - Target Group (for {who}'s message)**\n\nCampaign: {name}\nType: {label}\n\n"
+            f"First send the GROUP username or invite link where the {who.lower()} sent the message.\n"
+            "Examples: `@group_name`, `https://t.me/+invitehash`"
+        )
+    elif ttype in ("account_profile", "account_pfp"):
+        return (
+            f"**Campaign Setup: {step} - Target User**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the user's username or link.\n"
+            "Examples: `@username`, `https://t.me/username`"
+        )
+    elif ttype in ("bot_profile", "bot_pfp", "bot_msgs"):
+        return (
+            f"**Campaign Setup: {step} - Target Bot**\n\nCampaign: {name}\nType: {label}\n\n"
+            "Send the bot username or link.\n"
+            "Examples: `@BotFather`, `https://t.me/example_bot`"
+        )
+    return (
+        f"**Campaign Setup: {step} - Target**\n\nCampaign: {name}\nType: {label}\n\n"
+        "Send the target username or link."
+    )
+
+
+def _target_prompt(data: dict):
+    """Legacy alias used in some callbacks."""
+    return _target_prompt_text(data)
 
 
 async def show_target_prompt(event, data: dict):
-    await _render(event, 
-        _target_prompt(data),
+    data["step"] = "target"
+    _save_flow(event.sender_id, data)
+    await _render(event,
+        _target_prompt_text(data),
         buttons=[
-            [Button.inline("Change Name", b"cmp:name_edit")],
+            [_btn_back("Back", b"cmp:back_ttype")],
             [_cancel_button()],
         ],
     )
+
+
+async def show_user_group_msg_prompt(event, data: dict):
+    """Second target prompt for user_in_group / bot_in_group: ask for the message link."""
+    group = data.get("target") or ""
+    ttype = data.get("target_type") or "user_in_group"
+    target_name = "Bot" if ttype == "bot_in_group" else "User / Member"
+    data["step"] = "target_msg_link"
+    _save_flow(event.sender_id, data)
+    text = (
+        f"**Campaign Setup: Step 4b - {target_name}'s Message Link**\n\n"
+        f"Group: `{group}`\n\n"
+        f"Now send the MESSAGE LINK of the {target_name.lower()} you want to report.\n"
+        "Right-click / long-press the message in Telegram → Copy Message Link.\n"
+        "Example: `https://t.me/groupname/123`"
+    )
+    await _render(event, text, buttons=[
+        [_btn_back("Back (Change Group)", b"cmp:back_target")],
+        [_cancel_button()],
+    ])
 
 
 def _accounts_prompt_text(data: dict) -> str:
@@ -618,9 +813,8 @@ def _append_reason_choice(data: dict, reason: str, detail: str,
         return False
     choices.append(candidate)
     data["reason_choices"] = choices
-    data["reports_per_message"] = max(
-        int(data.get("reports_per_message") or 2), len(choices)
-    )
+    # Do NOT auto-bump reports_per_message just because more reasons were added.
+    # The user chose RPM separately; respect that choice.
     data["comment_required"] = any(
         bool(item.get("comment_required")) for item in choices
     )
@@ -660,42 +854,51 @@ async def show_reason_choices(event, data: dict):
         return
     data["step"] = "reason_choices"
     _save_flow(event.sender_id, data)
+    n_choices = len(choices)
+    rpm = int(data.get("reports_per_message") or 1)
     text = (
-        "**Campaign Setup: 7 of 10 - Report Types**\n\n"
+        "**Campaign Setup - Report Types Selected**\n\n"
         f"{_reason_choices_text(data)}\n\n"
-        f"Reports per link: {data.get('reports_per_message')}\n"
-        "Each report number uses the next report type. Add another type to "
-        "send different reports on the same message. The reports per link "
-        "count was raised automatically when needed."
+        f"Selected reasons: {n_choices} | Reports per target: {rpm}\n"
+        "Each account will use the assigned reason(s). "
+        "Add more reasons if you want to report with different types."
     )
     buttons = []
     if len(choices) < MAX_REASON_CHOICES:
-        buttons.append([Button.inline("Add Another Reason", b"cmp:radd")])
-    buttons.append([Button.inline("Continue", b"cmp:rcontinue")])
-    buttons.append([Button.inline("Remove Last", b"cmp:rremove")])
-    buttons.append([Button.inline("Back to Reasons", b"cmp:back_reason"),
-                    _cancel_button()])
+        buttons.append([Button.inline("➕ Add Another Reason", b"cmp:radd")])
+    buttons.append([_btn_continue("✅ Continue to Accounts", b"cmp:rcontinue")])
+    buttons.append([Button.inline("❌ Remove Last Reason", b"cmp:rremove")])
+    buttons.append([_btn_back("Back to Reasons", b"cmp:back_reason"), _cancel_button()])
     await _render(event, text, buttons=buttons)
 
 
 async def show_reason_prompt(event, data: dict):
     """Load the exact first page of report reasons from Telegram."""
     target = data.get("target") or ""
+    ttype = data.get("target_type") or "channel_msgs"
     messages = data.get("messages") or []
-    if not messages:
+    is_peer_type = ttype in (
+        "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+        "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+    )
+
+    # For peer / profile targets we don't need message links to load reasons
+    if not messages and not is_peer_type:
         data["step"] = "fetch"
         _save_flow(event.sender_id, data)
         await show_fetch_prompt(event, data)
         return
 
     phone = (data.get("selected_phones") or [None])[0]
+    # For peer targets use a dummy message link (just the target itself)
+    msg_link_for_query = messages[0] if messages else target
     await _render(
         event,
         "**Loading Telegram Report Reasons**\n\n"
         "Asking Telegram for the exact reasons available for this target.",
-        buttons=[[Button.inline("Cancel", b"cmp:cancel")]],
+        buttons=[[_cancel_button()]],
     )
-    result = await load_report_choices(phone, target, messages[0], option_bytes=b"")
+    result = await load_report_choices(phone, target, msg_link_for_query, option_bytes=b"")
 
     if result.get("kind") == "choose" and result.get("options"):
         data["reason_pages"] = [result["options"]]
@@ -712,7 +915,7 @@ async def show_reason_prompt(event, data: dict):
         buttons = report_option_buttons(result["options"], "cmp:ropt")
         buttons.append([Button.inline("Explain All Options", b"cmp:options")])
         buttons.append([Button.inline("Try Again", b"cmp:rretry"),
-                        Button.inline("Back", b"cmp:back_dist")])
+                        _btn_back("Back", b"cmp:back_accounts")])
         buttons.append([_cancel_button()])
         await _render(event, _reason_prompt_text(data), buttons=buttons)
         return
@@ -738,11 +941,12 @@ async def show_reason_prompt(event, data: dict):
     _save_flow(event.sender_id, data)
     buttons = report_option_buttons(standard_options, "cmp:ropt")
     buttons.append([Button.inline("Explain All Options", b"cmp:options")])
-    buttons.append([Button.inline("Back", b"cmp:back_dist"), _cancel_button()])
+    buttons.append([_btn_back("Back", b"cmp:back_accounts"), _cancel_button()])
     await _render(
         event,
         "**Telegram Report Reasons**\n\n"
-        "Choose a report reason below (select 2 types to send 2 reports per message):",
+        "Select one or more real Telegram report reasons below.\n"
+        "After selecting, tap ✅ Continue to proceed to account assignment.",
         buttons=buttons,
     )
 
@@ -763,7 +967,7 @@ async def show_stored_reason_page(event, data: dict):
         prefix = "cmp:ropt"
     else:
         text = (
-            "**Campaign Setup: 7 of 10 - Telegram Options**\n\n"
+            "**Campaign Setup - Telegram Sub-Options**\n\n"
             f"Reason: {reason_display(data.get('reason'))}\n\n"
             "These are the exact sub-options returned by Telegram. Choose one "
             "or continue with the main reason."
@@ -773,10 +977,10 @@ async def show_stored_reason_page(event, data: dict):
     if page_index == 0:
         buttons.append([Button.inline("Explain All Options", b"cmp:options")])
         buttons.append([Button.inline("Try Again", b"cmp:rretry"),
-                        Button.inline("Back", b"cmp:back_dist")])
+                        _btn_back("Back", b"cmp:back_accounts")])
     else:
-        buttons.append([Button.inline("Continue with main reason", b"cmp:rskip")])
-        buttons.append([Button.inline("Back", b"cmp:back_reason")])
+        buttons.append([_btn_continue("Continue with main reason", b"cmp:rskip")])
+        buttons.append([_btn_back("Back to Reasons", b"cmp:back_reason")])
     buttons.append([_cancel_button()])
     await _render(event, text, buttons=buttons)
 
@@ -902,9 +1106,9 @@ async def show_comment_prompt(event, data: dict):
         buttons.append([Button.inline("Set One Comment for All", b"cmp:comm_all")])
     else:
         buttons.append([Button.inline("Add Comment", b"cmp:comm_all")])
-    buttons.append([Button.inline("Continue to Repeat Interval", b"cmp:comm_done")])
+    buttons.append([_btn_continue("No Comment - Continue", b"cmp:comm_done")])
     buttons.append([Button.inline("No Comment (Clear All)", b"cmp:comment_no")])
-    buttons.append([Button.inline("Back", back), _cancel_button()])
+    buttons.append([_btn_back("Back", back), _cancel_button()])
     await _render(event, _comment_prompt_text(data), buttons=buttons)
 
 
@@ -953,7 +1157,7 @@ async def show_duration_prompt(event, data: dict):
         [Button.inline("30 days", b"cmp:duration:720")],
         [Button.inline("Unlimited until stopped", b"cmp:duration:0")],
         [Button.inline("Custom Duration", b"cmp:duration_custom")],
-        [Button.inline("Back", b"cmp:back_interval"), _cancel_button()],
+        [_btn_back("Back", b"cmp:back_interval"), _cancel_button()],
     ]
     await _render(event, _duration_prompt_text(data), buttons=buttons)
 
@@ -991,34 +1195,22 @@ def _summary_text(data: dict) -> str:
 async def show_summary(event, data: dict):
     one_time = float(data.get("interval_hours") or 0) <= 0
     back = b"cmp:back_interval" if one_time else b"cmp:back_duration"
-    
-    # Ensure reason choices exist; auto-pair 2 report types
+
+    # Only set a default reason if none was chosen at all
     choices = _reason_choices(data)
     if not choices:
-        choices = [
-            {"reason": "spam", "detail": "Spam", "option": ""},
-            {"reason": "fake", "detail": "Fake Account / Scam", "option": ""},
-        ]
+        choices = [{"reason": "spam", "detail": "Spam", "option": ""}]
         data["reason_choices"] = choices
-        data["reports_per_message"] = max(2, int(data.get("reports_per_message") or 2))
         data["reason"] = "spam"
         data["reason_detail"] = "Spam"
         data["reason_option"] = ""
         _save_flow(event.sender_id, data)
-    elif len(choices) == 1:
-        primary = (choices[0].get("reason") or "spam").lower()
-        sec = "fake" if "spam" in primary else ("violence" if "fake" in primary else "spam")
-        sec_label = "Fake Account / Scam" if sec == "fake" else sec.capitalize()
-        choices.append({"reason": sec, "detail": sec_label, "option": ""})
-        data["reason_choices"] = choices
-        data["reports_per_message"] = max(2, int(data.get("reports_per_message") or 2))
-        _save_flow(event.sender_id, data)
 
     buttons = [
-        [Button.inline("CREATE & START CAMPAIGN NOW", b"cmp:create_start")],
-        [Button.inline("Save Campaign (Start Later)", b"cmp:create")],
+        [_btn_continue("🚀 CREATE & START CAMPAIGN NOW", b"cmp:create_start")],
+        [_btn_continue("💾 Save Campaign (Start Later)", b"cmp:create")],
         [Button.inline("Change Report Reasons", b"cmp:back_reason")],
-        [Button.inline("Back", back), _cancel_button()],
+        [_btn_back("Back", back), _cancel_button()],
     ]
     await _render(event, _summary_text(data), buttons=buttons)
 
@@ -1638,28 +1830,21 @@ async def create_campaign(event, user_id: int, data: dict, start_now: bool = Fal
         return
     choices = _reason_choices(data)
     if not choices:
-        choices = [
-            {"reason": "spam", "detail": "Spam", "option": ""},
-            {"reason": "fake", "detail": "Fake Account / Scam", "option": ""},
-        ]
-        data["reason_choices"] = choices
-    elif len(choices) == 1:
-        primary = (choices[0].get("reason") or "spam").lower()
-        sec = "fake" if "spam" in primary else ("violence" if "fake" in primary else "spam")
-        sec_label = "Fake Account / Scam" if sec == "fake" else sec.capitalize()
-        choices.append({"reason": sec, "detail": sec_label, "option": ""})
+        choices = [{"reason": "spam", "detail": "Spam", "option": ""}]
         data["reason_choices"] = choices
 
     first = choices[0]
     campaign_id = db.create_report_campaign({
         "name": data.get("name") or target,
         "target": target,
+        "target_type": data.get("target_type") or "channel_msgs",
         "account_phones": account_phones,
         "messages": messages,
         "reports_per_message": max(1, int(data.get("reports_per_message") or CAMPAIGN_DEFAULT_REPORTS_PER_MESSAGE)),
         "delay_seconds": int(data.get("delay") or 5),
         "exec_mode": "safe",
         "dist_mode": data.get("dist_mode") or "all",
+        "account_rules": data.get("account_rules") or {},
         "reason": first.get("reason") or "spam",
         "reason_detail": first.get("detail") or "",
         "reason_option": first.get("option") or "",
@@ -1926,6 +2111,8 @@ async def handle_campaign_callback(event, data: str):
             _save_flow(user_id, {
                 "step": "name",
                 "name": "",
+                "target_cat": "",
+                "target_type": "",
                 "selected_phones": [],
                 "accounts_mode": "all",
                 "reports_per_message": CAMPAIGN_DEFAULT_REPORTS_PER_MESSAGE,
@@ -2018,10 +2205,9 @@ async def handle_campaign_callback(event, data: str):
                 await _render(event, "Session expired. Open Campaigns again.",
                                  buttons=[[Button.inline("Campaigns", b"cmp:menu"), _main_button()]])
                 return
-            flow["step"] = "target"
             flow["name"] = flow.get("name") or ""
             _save_flow(user_id, flow)
-            await show_target_prompt(event, flow)
+            await show_target_category_prompt(event, flow)
             return
         if action == "name_edit":
             flow = _require_flow(event, user_id)
@@ -2031,6 +2217,39 @@ async def handle_campaign_callback(event, data: str):
             flow["step"] = "name"
             _save_flow(user_id, flow)
             await show_name_prompt(event, send=False)
+            return
+        if action == "tcat" and arg:
+            flow = _require_flow(event, user_id)
+            if not flow:
+                await show_campaign_menu(event, send=False)
+                return
+            flow["target_cat"] = arg
+            flow["target_type"] = ""
+            _save_flow(user_id, flow)
+            await show_target_type_prompt(event, flow)
+            return
+        if action == "ttype" and arg:
+            flow = _require_flow(event, user_id)
+            if not flow:
+                await show_campaign_menu(event, send=False)
+                return
+            flow["target_type"] = arg
+            _save_flow(user_id, flow)
+            await show_target_prompt(event, flow)
+            return
+        if action == "back_tcat":
+            flow = _require_flow(event, user_id)
+            if not flow:
+                await show_campaign_menu(event, send=False)
+                return
+            await show_target_category_prompt(event, flow)
+            return
+        if action == "back_ttype":
+            flow = _require_flow(event, user_id)
+            if not flow:
+                await show_campaign_menu(event, send=False)
+                return
+            await show_target_type_prompt(event, flow)
             return
 
         # Actions on existing campaigns (no active wizard flow required)
@@ -2453,9 +2672,10 @@ async def handle_campaign_callback(event, data: str):
                 _save_flow(user_id, flow)
                 await show_stored_reason_page(event, flow)
             else:
-                flow["step"] = "dist"
+                # Go back to accounts
+                flow["step"] = "accounts"
                 _save_flow(user_id, flow)
-                await show_dist_prompt(event, flow)
+                await show_accounts_prompt(event, flow)
             return
         if action == "back_rsub":
             pages = flow.get("reason_pages") or []
@@ -2491,9 +2711,19 @@ async def handle_campaign_callback(event, data: str):
         if action == "acc_all":
             flow["accounts_mode"] = "all"
             flow["selected_phones"] = []
-            flow["step"] = "fetch"
-            _save_flow(user_id, flow)
-            await show_fetch_prompt(event, flow)
+            ttype = flow.get("target_type") or "channel_msgs"
+            is_peer = ttype in (
+                "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+                "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+            )
+            if is_peer:
+                flow["step"] = "reason"
+                _save_flow(user_id, flow)
+                await show_reason_prompt(event, flow)
+            else:
+                flow["step"] = "fetch"
+                _save_flow(user_id, flow)
+                await show_fetch_prompt(event, flow)
             return
         if action == "acc_multi":
             flow["accounts_mode"] = "specific"
@@ -2505,9 +2735,19 @@ async def handle_campaign_callback(event, data: str):
         if action == "acc_only" and arg:
             flow["accounts_mode"] = "specific"
             flow["selected_phones"] = [arg]
-            flow["step"] = "fetch"
-            _save_flow(user_id, flow)
-            await show_fetch_prompt(event, flow)
+            ttype = flow.get("target_type") or "channel_msgs"
+            is_peer = ttype in (
+                "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+                "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+            )
+            if is_peer:
+                flow["step"] = "reason"
+                _save_flow(user_id, flow)
+                await show_reason_prompt(event, flow)
+            else:
+                flow["step"] = "fetch"
+                _save_flow(user_id, flow)
+                await show_fetch_prompt(event, flow)
             return
         if action == "acc_toggle" and arg:
             selected = list(flow.get("selected_phones") or [])
@@ -2525,9 +2765,19 @@ async def handle_campaign_callback(event, data: str):
                 await event.answer("Select at least one account.", alert=True)
                 return
             flow["accounts_mode"] = "specific"
-            flow["step"] = "fetch"
-            _save_flow(user_id, flow)
-            await show_fetch_prompt(event, flow)
+            ttype = flow.get("target_type") or "channel_msgs"
+            is_peer = ttype in (
+                "channel_peer", "channel_pfp", "group_peer", "group_pfp",
+                "account_profile", "account_pfp", "bot_profile", "bot_pfp"
+            )
+            if is_peer:
+                flow["step"] = "reason"
+                _save_flow(user_id, flow)
+                await show_reason_prompt(event, flow)
+            else:
+                flow["step"] = "fetch"
+                _save_flow(user_id, flow)
+                await show_fetch_prompt(event, flow)
             return
 
         if action == "fetch_all":
@@ -2547,7 +2797,7 @@ async def handle_campaign_callback(event, data: str):
             return
 
         if action == "rpm":
-            flow["reports_per_message"] = max(1, int(arg or 2))
+            flow["reports_per_message"] = max(1, int(arg or 1))
             flow["step"] = "delay"
             _save_flow(user_id, flow)
             await show_delay_prompt(event, flow)
@@ -2563,9 +2813,9 @@ async def handle_campaign_callback(event, data: str):
             return
         if action == "delay":
             flow["delay"] = max(1, int(arg or 5))
-            flow["step"] = "dist"
+            flow["step"] = "reason"
             _save_flow(user_id, flow)
-            await show_dist_prompt(event, flow)
+            await show_reason_prompt(event, flow)
             return
         if action == "dist":
             flow["dist_mode"] = arg or "all"
@@ -2607,14 +2857,8 @@ async def handle_campaign_callback(event, data: str):
             choices = _reason_choices(flow)
             if not choices:
                 _append_reason_choice(flow, "spam", "Spam", "")
-                _append_reason_choice(flow, "fake", "Fake Account / Scam", "")
-            elif len(choices) == 1:
-                primary = (choices[0].get("reason") or "spam").lower()
-                sec = "fake" if "spam" in primary else ("violence" if "fake" in primary else "spam")
-                sec_label = "Fake Account / Scam" if sec == "fake" else sec.capitalize()
-                _append_reason_choice(flow, sec, sec_label, "")
-            
-            flow["reports_per_message"] = max(2, int(flow.get("reports_per_message") or 2))
+            # Do NOT inject fake secondary reasons. Respect the user's selection.
+            # Do NOT force-bump reports_per_message.
             flow["step"] = "comment"
             _save_flow(user_id, flow)
             await show_comment_prompt(event, flow)
@@ -2833,19 +3077,35 @@ async def handle_campaign_text(event, data: dict):
             await event.respond("Name must be 80 characters or fewer.")
             return
         data["name"] = text
-        data["step"] = "target"
         _save_flow(user_id, data)
-        await event.respond(
-            _target_prompt(data),
-            buttons=[[Button.inline("Change Name", b"cmp:name_edit"), _cancel_button()]],
-        )
+        await show_target_category_prompt(event, data)
         return
 
     if step == "target":
         if not text:
-            await event.respond("Send a channel username or link.")
+            await event.respond("Send a target username or link.")
+            return
+        ttype = data.get("target_type") or "channel_msgs"
+        if ttype in ("user_in_group", "bot_in_group") and not data.get("target_group"):
+            # First input is the group link, second will be the message link
+            data["target_group"] = text
+            data["target"] = text  # used for joining
+            _save_flow(user_id, data)
+            await show_user_group_msg_prompt(event, data)
             return
         data["target"] = text
+        data["step"] = "accounts"
+        _save_flow(user_id, data)
+        await show_accounts_prompt(event, data)
+        return
+
+    if step == "target_msg_link":
+        # user_in_group / bot_in_group: second step - message link
+        if not text:
+            await event.respond("Send the message link.")
+            return
+        data["messages"] = [text.strip()]
+        data["target"] = data.get("target_group") or data.get("target") or text
         data["step"] = "accounts"
         _save_flow(user_id, data)
         await show_accounts_prompt(event, data)
