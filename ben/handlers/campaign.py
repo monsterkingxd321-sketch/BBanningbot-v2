@@ -1106,7 +1106,7 @@ def _comment_prompt_text(data: dict) -> str:
 
 async def show_comment_prompt(event, data: dict):
     choices = _reason_choices(data)
-    back = b"cmp:back_rchoices" if choices else b"cmp:back_reason"
+    back = b"cmp:wiz_ar_back" if (len(choices) > 1 or len(_get_flow_accounts(data)) > 1 or data.get("account_rules")) else (b"cmp:back_rchoices" if choices else b"cmp:back_reason")
     buttons = []
     if len(choices) > 1:
         for index, choice in enumerate(choices):
@@ -1184,6 +1184,27 @@ def _summary_text(data: dict) -> str:
     comment = data.get("comment") or "none"
     if len(comment) > 300:
         comment = comment[:300] + "..."
+
+    rules = data.get("account_rules") or {}
+    rules_text = f"{len(rules)} custom assigned" if rules else "Using default distribution"
+    rules_lines = []
+    if rules:
+        for p, r in rules.items():
+            r_list = r.get("reasons") or []
+            r_str = r_list[0].get("detail") or r_list[0].get("reason") if r_list else "Default reason"
+            m_spec = r.get("messages")
+            if m_spec == "all" or m_spec is None:
+                m_str = "All msgs"
+            elif isinstance(m_spec, list):
+                m_str = f"Msgs: {','.join(str(i+1) for i in m_spec)}" if m_spec else "All msgs"
+            else:
+                m_str = "All msgs"
+            rules_lines.append(f"• `{mask_phone(p)}`: {r_str} ({m_str})")
+
+    ar_section = f"\nAccount rules: {rules_text}\n" + "\n".join(rules_lines[:5])
+    if len(rules_lines) > 5:
+        ar_section += f"\n...and {len(rules_lines) - 5} more account rules"
+
     return (
         "**Campaign Review**\n\n"
         f"Name: {data.get('name') or 'Untitled campaign'}\n"
@@ -1191,6 +1212,7 @@ def _summary_text(data: dict) -> str:
         f"Accounts: {accounts}\n"
         f"Message links: {len(data.get('messages') or [])}\n"
         f"Distribution: {_dist_text(data.get('dist_mode'))}\n"
+        f"{ar_section}\n"
         f"Reports per link: {data.get('reports_per_message')}\n"
         f"Reports per cycle: {_total_reports(data)}\n"
         f"Delay: {data.get('delay')} seconds\n"
@@ -1222,6 +1244,7 @@ async def show_summary(event, data: dict):
     buttons = [
         [_btn_continue("🚀 CREATE & START CAMPAIGN NOW", b"cmp:create_start")],
         [_btn_continue("💾 Save Campaign (Start Later)", b"cmp:create")],
+        [Button.inline("Assign Accounts / Rules", b"cmp:wiz_ar_menu")],
         [Button.inline("Change Report Reasons", b"cmp:back_reason")],
         [_btn_back("Back", back), _cancel_button()],
     ]
@@ -1605,6 +1628,266 @@ async def show_account_copy_picker(event, campaign_id: int, phone: str):
     if other_accounts:
         buttons.append([Button.inline("Apply to ALL Other Accounts", f"cmp:ed_ar_copy_all:{campaign_id}:{phone}".encode())])
     buttons.append([Button.inline("Back", f"cmp:ed_ar_acc:{campaign_id}:{phone}".encode())])
+    await _render(event, text, buttons=buttons)
+
+
+# ==============================================================================
+# WIZARD: Account Assignment & Custom Rules Step (Inline in Setup Flow)
+# ==============================================================================
+
+def _get_flow_accounts(data: dict):
+    accounts = db.get_active_accounts()
+    mode = data.get("accounts_mode")
+    assigned = data.get("selected_phones") or []
+    if mode != "all" and assigned:
+        accounts = [acc for acc in accounts if acc[1] in set(assigned)]
+    return accounts
+
+
+async def show_wizard_account_assignment_menu(event, data: dict):
+    """Entry menu after reason selection: choose how accounts report."""
+    accounts = _get_flow_accounts(data)
+    choices = _reason_choices(data)
+    rules = data.get("account_rules") or {}
+    msgs = data.get("messages") or []
+    dist_mode = data.get("dist_mode") or "all"
+
+    text = (
+        "**Campaign Setup: 8 of 11 - Account Assignment & Distribution**\n\n"
+        f"Selected Reasons: {len(choices)}\n"
+        f"Available Accounts: {len(accounts)}\n"
+        f"Message Links: {len(msgs)}\n"
+        f"Custom Rules Assigned: {len(rules)}\n\n"
+        "Choose how accounts will report this target:\n\n"
+        "1. **All Accounts Report All Reasons**\n"
+        "Every active account will report all selected reasons.\n\n"
+        "2. **Auto-Distribute Reasons Evenly Across Accounts**\n"
+        "Automatically splits the reasons so Account 1 reports Reason 1, Account 2 reports Reason 2, etc.\n\n"
+        "3. **Custom Account Assignment**\n"
+        "Manually specify exactly which account reports which reason or which message links."
+    )
+    buttons = [
+        [_btn_continue("All Accounts Report All Reasons", b"cmp:wiz_ar_mode:all")],
+        [Button.inline("Auto-Distribute Reasons Across Accounts", b"cmp:wiz_ar_mode:split")],
+        [Button.inline(f"Custom Account Assignment ({len(rules)} custom)", b"cmp:wiz_ar_menu")],
+    ]
+    if rules:
+        buttons.append([Button.inline("Reset / Clear Custom Rules", b"cmp:wiz_ar_clear")])
+    buttons.append([_btn_back("Back to Reasons", b"cmp:back_rchoices"), _cancel_button()])
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_rules_menu(event, data: dict):
+    """List all accounts in setup wizard to assign custom reason/messages."""
+    accounts = _get_flow_accounts(data)
+    rules = data.get("account_rules") or {}
+    choices = _reason_choices(data)
+
+    text = (
+        "**Custom Account Assignment**\n\n"
+        f"Accounts: {len(accounts)} | Custom Configured: {len(rules)}\n\n"
+        "Tap any account to customize its report reason, message links, or comment. "
+        "Accounts without custom rules report using the campaign defaults.\n\n"
+        "Tap an account to configure:"
+    )
+    buttons = []
+    for acc in accounts:
+        phone = acc[1]
+        rule = rules.get(phone)
+        tag = "[Custom]" if rule else "[Default]"
+        masked = mask_phone(phone)
+        summary = ""
+        if rule:
+            r_list = rule.get("reasons") or []
+            r_name = r_list[0].get("detail") or r_list[0].get("reason") if r_list else "Default reason"
+            m_spec = rule.get("messages")
+            if m_spec == "all" or m_spec is None:
+                m_txt = "All msgs"
+            elif isinstance(m_spec, list):
+                m_txt = f"Msgs: {','.join(str(i+1) for i in m_spec)}" if m_spec else "All msgs"
+            else:
+                m_txt = "All msgs"
+            summary = f" ({r_name} | {m_txt})"
+        label = f"{tag} {masked}{summary}"[:40]
+        buttons.append([Button.inline(label, f"cmp:wiz_ar_acc:{phone}".encode())])
+
+    if rules:
+        buttons.append([Button.inline("Clear All Custom Rules", b"cmp:wiz_ar_clear")])
+    buttons.append([_btn_continue("Done - Continue to Comments", b"cmp:wiz_ar_done")])
+    buttons.append([_btn_back("Back", b"cmp:wiz_ar_back"), _cancel_button()])
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_rule_editor(event, data: dict, phone: str):
+    rules = data.get("account_rules") or {}
+    rule = rules.get(phone) or {}
+    msgs = data.get("messages") or []
+    choices = _reason_choices(data)
+
+    reasons = rule.get("reasons")
+    if reasons:
+        r_txt = ", ".join(r.get("detail") or r.get("reason") for r in reasons)
+    else:
+        def_names = ", ".join(r.get("detail") or r.get("reason") for r in choices) or "Default"
+        r_txt = f"Default ({def_names})"
+
+    m_spec = rule.get("messages")
+    if m_spec == "all" or m_spec is None:
+        m_txt = f"All Messages ({len(msgs)} posts)"
+    elif isinstance(m_spec, list):
+        if not m_spec:
+            m_txt = "All Messages"
+        else:
+            m_txt = ", ".join(f"Message #{i+1}" for i in m_spec)
+    else:
+        m_txt = "All Messages"
+
+    comm = rule.get("comment")
+    if comm is not None and comm != "":
+        c_txt = comm
+    else:
+        c_txt = "Default (" + (data.get("comment") or "none") + ")"
+
+    text = (
+        f"**Custom Rule for Account: {mask_phone(phone)}**\n"
+        f"Target: `{data.get('target')}`\n\n"
+        f"Report Reason:\n`{r_txt}`\n\n"
+        f"Targeted Messages:\n`{m_txt}`\n\n"
+        f"Comment:\n`{c_txt}`\n\n"
+        "Customize this account's reporting behavior:"
+    )
+    buttons = [
+        [Button.inline("Choose Report Reason", f"cmp:wiz_ar_rsn:{phone}".encode()),
+         Button.inline("Choose Targeted Messages", f"cmp:wiz_ar_msg:{phone}".encode())],
+        [Button.inline("Set Custom Comment", f"cmp:wiz_ar_comm:{phone}".encode()),
+         Button.inline("Reset to Default", f"cmp:wiz_ar_reset:{phone}".encode())],
+        [Button.inline("Copy Rule to Other Accounts", f"cmp:wiz_ar_copy:{phone}".encode())],
+        [_btn_back("Back to Account List", b"cmp:wiz_ar_menu")]
+    ]
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_reason_picker(event, data: dict, phone: str):
+    choices = _reason_choices(data)
+    text = (
+        f"**Select Report Reason for {mask_phone(phone)}**\n\n"
+        "Assign which reason this account will report.\n"
+        "You can pick from reasons you already selected in the campaign, or pick any official Telegram reason:"
+    )
+    buttons = []
+    # 1. Quick pick from selected campaign reasons
+    if choices:
+        buttons.append([Button.inline("--- From Selected Campaign Reasons ---", b"cmp:noop")])
+        for idx, c in enumerate(choices):
+            lbl = c.get("detail") or c.get("reason") or f"Reason {idx+1}"
+            buttons.append([Button.inline(f"Assign: {lbl[:35]}", f"cmp:wiz_ar_rsn_sel:{phone}:{idx}".encode())])
+
+    # 2. Pick any standard Telegram reason
+    buttons.append([Button.inline("--- Or Pick From All Reasons ---", b"cmp:noop")])
+    reasons_list = [
+        ("spam", "Spam"),
+        ("fake", "Scam or Fraud"),
+        ("violence", "Violence"),
+        ("child_abuse", "Child Abuse"),
+        ("illegal_drugs", "Illegal Goods & Services"),
+        ("pornography", "Illegal Adult Content"),
+        ("personal_details", "Personal Data"),
+        ("copyright", "Copyright"),
+        ("other", "Other"),
+    ]
+    row = []
+    for key, label in reasons_list:
+        row.append(Button.inline(label, f"cmp:wiz_ar_rsn_menu:{phone}:{key}".encode()))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([Button.inline("Use Default (All Campaign Reasons)", f"cmp:wiz_ar_rsn_def:{phone}".encode())])
+    buttons.append([_btn_back("Back", f"cmp:wiz_ar_acc:{phone}".encode())])
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_subreason_picker(event, data: dict, phone: str, r_key: str):
+    code_map = {
+        "spam": ("Spam", "39"),
+        "fake": ("Scam or Fraud", "37"),
+        "violence": ("Violence", "33"),
+        "child_abuse": ("Child Abuse", "32"),
+        "illegal_drugs": ("Illegal Goods & Services", "34"),
+        "pornography": ("Illegal Adult Content", "35"),
+        "personal_details": ("Personal Data", "36"),
+        "copyright": ("Copyright", "38"),
+        "other": ("Other", "61"),
+    }
+    r_name, r_code = code_map.get(r_key, ("Other", "61"))
+    subs = TELEGRAM_OFFICIAL_SUBOPTIONS.get(r_code, [])
+
+    text = (
+        f"**Select Sub-Option for {r_name} ({mask_phone(phone)})**\n\n"
+        "Choose the exact official Telegram sub-option for this account:"
+    )
+    buttons = []
+    buttons.append([Button.inline(f"General {r_name} (Main)", f"cmp:wiz_ar_rsn_pick:{phone}:{r_key}:{r_code}".encode())])
+    row = []
+    for idx, sub in enumerate(subs):
+        label = sub.get("text", "")
+        opt_hex = sub.get("option", "")
+        row.append(Button.inline(label[:24], f"cmp:wiz_ar_rsn_sub:{phone}:{r_key}:{opt_hex}:{idx}".encode()))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([_btn_back("Back to Reasons", f"cmp:wiz_ar_rsn:{phone}".encode())])
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_message_picker(event, data: dict, phone: str):
+    rules = data.get("account_rules") or {}
+    rule = rules.get(phone) or {}
+    msgs = data.get("messages") or []
+    m_spec = rule.get("messages")
+    is_all = (m_spec == "all" or m_spec is None)
+    selected_indices = set(m_spec) if isinstance(m_spec, list) else set()
+
+    text = (
+        f"**Targeted Messages for {mask_phone(phone)}**\n\n"
+        f"Total Messages: {len(msgs)}\n\n"
+        "Select whether this account reports All Messages or only specific message(s):"
+    )
+    buttons = []
+    all_tag = "[X] " if is_all else "[ ] "
+    buttons.append([Button.inline(f"{all_tag}All Messages / Follow Strategy", f"cmp:wiz_ar_msgtog:{phone}:all".encode())])
+    row = []
+    for idx in range(len(msgs)):
+        tag = "[X] " if (not is_all and idx in selected_indices) else "[ ] "
+        row.append(Button.inline(f"{tag}Message #{idx+1}", f"cmp:wiz_ar_msgtog:{phone}:{idx}".encode()))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([_btn_continue("Done / Back", f"cmp:wiz_ar_acc:{phone}".encode())])
+    await _render(event, text, buttons=buttons)
+
+
+async def show_wizard_account_copy_picker(event, data: dict, phone: str):
+    accounts = _get_flow_accounts(data)
+    other_accounts = [acc for acc in accounts if acc[1] != phone]
+
+    text = (
+        f"**Copy Rule from {mask_phone(phone)} to Other Accounts**\n\n"
+        "Tap an account below to apply the exact same reporting rule to it, "
+        "or apply to all other accounts at once:"
+    )
+    buttons = []
+    for acc in other_accounts:
+        o_phone = acc[1]
+        buttons.append([Button.inline(f"Apply to {mask_phone(o_phone)}", f"cmp:wiz_ar_copy_to:{phone}:{o_phone}".encode())])
+    if other_accounts:
+        buttons.append([Button.inline("Apply to ALL Other Accounts", f"cmp:wiz_ar_copy_all:{phone}".encode())])
+    buttons.append([_btn_back("Back", f"cmp:wiz_ar_acc:{phone}".encode())])
     await _render(event, text, buttons=buttons)
 
 
@@ -2870,11 +3153,285 @@ async def handle_campaign_callback(event, data: str):
             choices = _reason_choices(flow)
             if not choices:
                 _append_reason_choice(flow, "spam", "Spam", "")
-            # Do NOT inject fake secondary reasons. Respect the user's selection.
-            # Do NOT force-bump reports_per_message.
+                choices = _reason_choices(flow)
+            accs = _get_flow_accounts(flow)
+            # If multiple reasons selected or multiple accounts available, prompt account assignment!
+            if len(choices) > 1 or len(accs) > 1 or flow.get("account_rules"):
+                flow["step"] = "wiz_ar_choice"
+                _save_flow(user_id, flow)
+                await show_wizard_account_assignment_menu(event, flow)
+                return
             flow["step"] = "comment"
             _save_flow(user_id, flow)
             await show_comment_prompt(event, flow)
+            return
+
+        # Wizard Account Rules & Assignment Callbacks
+        if action == "wiz_ar_mode" and arg:
+            if arg == "split":
+                # Automatically split reasons across available accounts
+                accs = _get_flow_accounts(flow)
+                choices = _reason_choices(flow)
+                if accs and choices:
+                    rules = dict(flow.get("account_rules") or {})
+                    for idx, acc in enumerate(accs):
+                        phone = acc[1]
+                        c = choices[idx % len(choices)]
+                        rules[phone] = {
+                            "reasons": [c],
+                            "messages": "all",
+                            "comment": c.get("comment") or flow.get("comment") or ""
+                        }
+                    flow["account_rules"] = rules
+                    flow["dist_mode"] = "auto_distribute"
+                    await event.answer("Reasons evenly distributed across all active accounts!", alert=True)
+            elif arg == "all":
+                flow["dist_mode"] = "all"
+                flow["account_rules"] = {}
+                await event.answer("All accounts set to report all selected reasons.", alert=True)
+            flow["step"] = "comment"
+            _save_flow(user_id, flow)
+            await show_comment_prompt(event, flow)
+            return
+
+        if action == "wiz_ar_menu":
+            flow["step"] = "wiz_ar_menu"
+            _save_flow(user_id, flow)
+            await show_wizard_account_rules_menu(event, flow)
+            return
+
+        if action == "wiz_ar_done":
+            flow["step"] = "comment"
+            _save_flow(user_id, flow)
+            await show_comment_prompt(event, flow)
+            return
+
+        if action == "wiz_ar_back":
+            flow["step"] = "wiz_ar_choice"
+            _save_flow(user_id, flow)
+            await show_wizard_account_assignment_menu(event, flow)
+            return
+
+        if action == "wiz_ar_clear":
+            flow["account_rules"] = {}
+            _save_flow(user_id, flow)
+            await show_wizard_account_rules_menu(event, flow)
+            return
+
+        if action == "wiz_ar_acc" and arg:
+            phone = arg
+            flow["step"] = "wiz_ar_acc"
+            _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_rsn" and arg:
+            phone = arg
+            await show_wizard_account_reason_picker(event, flow, phone)
+            return
+
+        if action == "wiz_ar_rsn_sel" and arg:
+            parts = arg.split(":")
+            phone = parts[0]
+            try:
+                idx = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                idx = 0
+            choices = _reason_choices(flow)
+            if 0 <= idx < len(choices):
+                chosen_reason = choices[idx]
+                rules = dict(flow.get("account_rules") or {})
+                rule = dict(rules.get(phone) or {})
+                rule["reasons"] = [chosen_reason]
+                rules[phone] = rule
+                flow["account_rules"] = rules
+                flow["dist_mode"] = "custom"
+                _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_rsn_def" and arg:
+            phone = arg
+            rules = dict(flow.get("account_rules") or {})
+            if phone in rules and "reasons" in rules[phone]:
+                del rules[phone]["reasons"]
+                if not rules[phone]:
+                    del rules[phone]
+                flow["account_rules"] = rules
+                _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_rsn_menu" and arg:
+            parts = arg.split(":")
+            phone = parts[0]
+            r_key = parts[1] if len(parts) > 1 else "spam"
+            await show_wizard_account_subreason_picker(event, flow, phone, r_key)
+            return
+
+        if action == "wiz_ar_rsn_sub" and arg:
+            parts = arg.split(":")
+            phone = parts[0]
+            r_key = parts[1] if len(parts) > 1 else "spam"
+            opt_hex = parts[2] if len(parts) > 2 else ""
+            sub_idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            code_map = {
+                "spam": "39", "fake": "37", "violence": "33", "child_abuse": "32",
+                "illegal_drugs": "34", "pornography": "35", "personal_details": "36",
+                "copyright": "38", "other": "61"
+            }
+            main_code = code_map.get(r_key, "61")
+            subs = TELEGRAM_OFFICIAL_SUBOPTIONS.get(main_code, [])
+            sub_text = subs[sub_idx].get("text", r_key) if 0 <= sub_idx < len(subs) else r_key
+            reason_obj = {"reason": r_key, "detail": sub_text, "option": opt_hex}
+            rules = dict(flow.get("account_rules") or {})
+            rule = dict(rules.get(phone) or {})
+            rule["reasons"] = [reason_obj]
+            rules[phone] = rule
+            flow["account_rules"] = rules
+            flow["dist_mode"] = "custom"
+            _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_rsn_pick" and arg:
+            parts = arg.split(":")
+            phone = parts[0]
+            r_key = parts[1] if len(parts) > 1 else "spam"
+            opt_hex = parts[2] if len(parts) > 2 else ""
+            labels = {
+                "spam": "Spam", "fake": "Scam or Fraud", "violence": "Violence",
+                "pornography": "Illegal Adult Content", "child_abuse": "Child Abuse",
+                "illegal_drugs": "Illegal Goods & Services", "personal_details": "Personal Data",
+                "copyright": "Copyright", "other": "Other",
+            }
+            reason_obj = {"reason": r_key, "detail": labels.get(r_key, r_key), "option": opt_hex}
+            rules = dict(flow.get("account_rules") or {})
+            rule = dict(rules.get(phone) or {})
+            rule["reasons"] = [reason_obj]
+            rules[phone] = rule
+            flow["account_rules"] = rules
+            flow["dist_mode"] = "custom"
+            _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_msg" and arg:
+            phone = arg
+            await show_wizard_account_message_picker(event, flow, phone)
+            return
+
+        if action == "wiz_ar_msgtog" and arg:
+            parts = arg.split(":")
+            phone = parts[0]
+            val = parts[1] if len(parts) > 1 else "all"
+            rules = dict(flow.get("account_rules") or {})
+            rule = dict(rules.get(phone) or {})
+            if val == "all":
+                rule["messages"] = "all"
+            else:
+                try:
+                    idx = int(val)
+                except ValueError:
+                    idx = 0
+                curr = rule.get("messages")
+                if curr == "all" or not isinstance(curr, list):
+                    rule["messages"] = [idx]
+                else:
+                    s = set(curr)
+                    if idx in s:
+                        s.remove(idx)
+                    else:
+                        s.add(idx)
+                    rule["messages"] = sorted(list(s))
+                    if not rule["messages"]:
+                        rule["messages"] = "all"
+            rules[phone] = rule
+            flow["account_rules"] = rules
+            flow["dist_mode"] = "custom"
+            _save_flow(user_id, flow)
+            await show_wizard_account_message_picker(event, flow, phone)
+            return
+
+        if action == "wiz_ar_comm" and arg:
+            phone = arg
+            flow["step"] = "edit_wiz_ar_comm"
+            flow["phone"] = phone
+            _save_flow(user_id, flow)
+            text, buttons = _custom_prompt(
+                f"**Custom Comment for Account {mask_phone(phone)}**\n\n"
+                "Send the custom comment text for this account (or type 'none' to remove comment):",
+                f"cmp:wiz_ar_acc:{phone}".encode()
+            )
+            buttons.insert(0, [Button.inline("Use Campaign Default Comment", f"cmp:wiz_ar_comm_clr:{phone}".encode())])
+            await _render(event, text, buttons=buttons)
+            return
+
+        if action == "wiz_ar_comm_clr" and arg:
+            phone = arg
+            rules = dict(flow.get("account_rules") or {})
+            if phone in rules and "comment" in rules[phone]:
+                del rules[phone]["comment"]
+                if not rules[phone]:
+                    del rules[phone]
+                flow["account_rules"] = rules
+                _save_flow(user_id, flow)
+            await show_wizard_account_rule_editor(event, flow, phone)
+            return
+
+        if action == "wiz_ar_reset" and arg:
+            phone = arg
+            rules = dict(flow.get("account_rules") or {})
+            if phone in rules:
+                del rules[phone]
+                flow["account_rules"] = rules
+                _save_flow(user_id, flow)
+            await show_wizard_account_rules_menu(event, flow)
+            return
+
+        if action == "wiz_ar_copy" and arg:
+            phone = arg
+            await show_wizard_account_copy_picker(event, flow, phone)
+            return
+
+        if action == "wiz_ar_copy_to" and arg:
+            parts = arg.split(":")
+            src = parts[0]
+            tgt = parts[1] if len(parts) > 1 else ""
+            if src and tgt:
+                rules = dict(flow.get("account_rules") or {})
+                src_rule = rules.get(src)
+                import copy
+                if src_rule:
+                    rules[tgt] = copy.deepcopy(src_rule)
+                else:
+                    if tgt in rules:
+                        del rules[tgt]
+                flow["account_rules"] = rules
+                flow["dist_mode"] = "custom"
+                _save_flow(user_id, flow)
+            await show_wizard_account_copy_picker(event, flow, src)
+            return
+
+        if action == "wiz_ar_copy_all" and arg:
+            src = arg
+            if src:
+                accs = _get_flow_accounts(flow)
+                rules = dict(flow.get("account_rules") or {})
+                src_rule = rules.get(src)
+                import copy
+                for acc in accs:
+                    o_phone = acc[1]
+                    if o_phone != src:
+                        if src_rule:
+                            rules[o_phone] = copy.deepcopy(src_rule)
+                        else:
+                            if o_phone in rules:
+                                del rules[o_phone]
+                flow["account_rules"] = rules
+                flow["dist_mode"] = "custom"
+                _save_flow(user_id, flow)
+            await show_wizard_account_rules_menu(event, flow)
             return
         if action == "ropt" and arg is not None:
             try:
@@ -3287,6 +3844,27 @@ async def handle_campaign_text(event, data: dict):
         db.update_report_campaign(cid, account_rules=rules)
         db.clear_user_state(user_id)
         await show_account_rule_editor(event, cid, phone)
+        return
+
+    if step == "edit_wiz_ar_comm":
+        phone = data.get("phone") or ""
+        rules = dict(data.get("account_rules") or {})
+        rule = dict(rules.get(phone) or {})
+        clean_txt = text.strip()
+        if clean_txt.lower() in ("none", "clear", "default"):
+            if "comment" in rule:
+                del rule["comment"]
+        else:
+            rule["comment"] = clean_txt[:1000]
+        if rule:
+            rules[phone] = rule
+        else:
+            if phone in rules:
+                del rules[phone]
+        data["account_rules"] = rules
+        data["step"] = "wiz_ar_acc"
+        _save_flow(user_id, data)
+        await show_wizard_account_rule_editor(event, data, phone)
         return
 
     if step == "comment_text":
