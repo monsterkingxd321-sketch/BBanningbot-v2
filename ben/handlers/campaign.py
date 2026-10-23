@@ -926,7 +926,7 @@ async def show_reason_prompt(event, data: dict):
         buttons = report_option_buttons(result["options"], "cmp:ropt")
         buttons.append([Button.inline("Explain All Options", b"cmp:options")])
         buttons.append([Button.inline("Try Again", b"cmp:rretry"),
-                        _btn_back("Back", b"cmp:back_accounts")])
+                        _btn_back("Back", b"cmp:back_dist" if data.get("messages") else b"cmp:back_accounts")])
         buttons.append([_cancel_button()])
         await _render(event, _reason_prompt_text(data), buttons=buttons)
         return
@@ -952,7 +952,7 @@ async def show_reason_prompt(event, data: dict):
     _save_flow(event.sender_id, data)
     buttons = report_option_buttons(standard_options, "cmp:ropt")
     buttons.append([Button.inline("Explain All Options", b"cmp:options")])
-    buttons.append([_btn_back("Back", b"cmp:back_accounts"), _cancel_button()])
+    buttons.append([_btn_back("Back", b"cmp:back_dist" if data.get("messages") else b"cmp:back_accounts"), _cancel_button()])
     await _render(
         event,
         "**Telegram Report Reasons**\n\n"
@@ -988,7 +988,7 @@ async def show_stored_reason_page(event, data: dict):
     if page_index == 0:
         buttons.append([Button.inline("Explain All Options", b"cmp:options")])
         buttons.append([Button.inline("Try Again", b"cmp:rretry"),
-                        _btn_back("Back", b"cmp:back_accounts")])
+                        _btn_back("Back", b"cmp:back_dist" if data.get("messages") else b"cmp:back_accounts")])
     else:
         buttons.append([_btn_continue("Continue with main reason", b"cmp:rskip")])
         buttons.append([_btn_back("Back to Reasons", b"cmp:back_reason")])
@@ -1659,16 +1659,19 @@ async def show_wizard_account_assignment_menu(event, data: dict):
         f"Message Links: {len(msgs)}\n"
         f"Custom Rules Assigned: {len(rules)}\n\n"
         "Choose how accounts will report this target:\n\n"
-        "1. **All Accounts Report All Reasons**\n"
-        "Every active account will report all selected reasons.\n\n"
-        "2. **Auto-Distribute Reasons Evenly Across Accounts**\n"
-        "Automatically splits the reasons so Account 1 reports Reason 1, Account 2 reports Reason 2, etc.\n\n"
-        "3. **Custom Account Assignment**\n"
+        "1. **Spread 1 Account per Message (Total = 1 per msg)**\n"
+        f"Account 1 reports Message 1, Account 2 reports Message 2, etc. (Total {len(msgs) if msgs else len(accounts)} reports).\n\n"
+        "2. **Auto-Distribute Reasons Across Accounts**\n"
+        "Automatically splits the reasons so different accounts report different reasons.\n\n"
+        "3. **All Accounts Report All Messages (Mass)**\n"
+        f"Every active account reports every message link ({len(accounts) * (len(msgs) or 1)} total reports).\n\n"
+        "4. **Custom Account Assignment**\n"
         "Manually specify exactly which account reports which reason or which message links."
     )
     buttons = [
-        [_btn_continue("All Accounts Report All Reasons", b"cmp:wiz_ar_mode:all")],
+        [Button.inline("1 Account per Message (Round-Robin)", b"cmp:wiz_ar_mode:rr")],
         [Button.inline("Auto-Distribute Reasons Across Accounts", b"cmp:wiz_ar_mode:split")],
+        [_btn_continue("All Accounts Report All Messages (Mass)", b"cmp:wiz_ar_mode:all")],
         [Button.inline(f"Custom Account Assignment ({len(rules)} custom)", b"cmp:wiz_ar_menu")],
     ]
     if rules:
@@ -3109,9 +3112,9 @@ async def handle_campaign_callback(event, data: str):
             return
         if action == "delay":
             flow["delay"] = max(1, int(arg or 5))
-            flow["step"] = "reason"
+            flow["step"] = "dist"
             _save_flow(user_id, flow)
-            await show_reason_prompt(event, flow)
+            await show_dist_prompt(event, flow)
             return
         if action == "dist":
             flow["dist_mode"] = arg or "all"
@@ -3168,7 +3171,24 @@ async def handle_campaign_callback(event, data: str):
 
         # Wizard Account Rules & Assignment Callbacks
         if action == "wiz_ar_mode" and arg:
-            if arg == "split":
+            if arg in ("rr", "round_robin"):
+                flow["dist_mode"] = "round_robin"
+                accs = _get_flow_accounts(flow)
+                msgs = flow.get("messages") or []
+                choices = _reason_choices(flow)
+                rules = dict(flow.get("account_rules") or {})
+                if accs and msgs:
+                    for idx, acc in enumerate(accs):
+                        phone = acc[1]
+                        c = choices[idx % len(choices)] if choices else None
+                        rules[phone] = {
+                            "reasons": [c] if c else [],
+                            "messages": [idx] if idx < len(msgs) else [idx % len(msgs)],
+                            "comment": c.get("comment") or flow.get("comment") or "" if c else ""
+                        }
+                    flow["account_rules"] = rules
+                await event.answer("Spread mode enabled: 1 account per message link!", alert=True)
+            elif arg == "split":
                 # Automatically split reasons across available accounts
                 accs = _get_flow_accounts(flow)
                 choices = _reason_choices(flow)
