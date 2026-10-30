@@ -229,6 +229,32 @@ async def _route_callback(event, user_id: int, data: str):
         )
         return
 
+    if data == "login_resend_otp":
+        op = active_operations.get(user_id)
+        if op and op.get('client') and op.get('phone'):
+            try:
+                await op['client'].send_code_request(op['phone'], force_sms=True)
+                await event.answer("🔄 OTP has been resent!", alert=True)
+                pm = op.get('progress_message')
+                if pm:
+                    try:
+                        await pm.edit(
+                            f"**Telegram Login: {mask_phone(op['phone'])}**\n\n"
+                            f"🔄 **OTP has been resent!** (Checked SMS/Telegram)\n"
+                            f"Please send the verification code as a text message.",
+                            buttons=[
+                                [Button.inline("🔄 Resend OTP", b"login_resend_otp"),
+                                 Button.inline("❌ Cancel Login", b"ui_cancel")]
+                            ]
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                await event.answer(f"Failed to resend: {e}", alert=True)
+        else:
+            await event.answer("No active login operation found.", alert=True)
+        return
+
     # ------------------------------------------------------------------
     # Saved report target
     # ------------------------------------------------------------------
@@ -375,6 +401,22 @@ async def _route_callback(event, user_id: int, data: str):
             await show_pfp_custom_prompt(event, data_state, send=False)
         return
 
+    if data.startswith("pfp_pick:"):
+        idx_str = data.split(":", 1)[1]
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        try:
+            p_idx = int(idx_str)
+        except ValueError:
+            p_idx = 1
+        data_state['target_type'] = 'pfp'
+        data_state['pfp_mode'] = 'custom'
+        data_state['pfp_indices'] = [p_idx]
+        await show_pfp_count_step(event, data_state, send=False)
+        return
+
     if data == "pfp_type_user":
         data_state = {"type": "user", "target_type": "pfp", "step": 2}
         db.set_user_state(user_id, "report_user_pfp_target", data_state)
@@ -419,6 +461,7 @@ async def _route_callback(event, user_id: int, data: str):
             await event.edit("Session expired. Start again with the menu.")
             return
         data_state['step'] = 2
+        data_state['target_type'] = 'messages'
         db.set_user_state(user_id, "report_target", data_state)
         await event.edit(
             "**Step 2/6 - Message Links Selection**\n\n"
@@ -437,6 +480,8 @@ async def _route_callback(event, user_id: int, data: str):
         if not data_state or not data_state.get('target'):
             await event.edit("Session expired. Start again with the menu.")
             return
+        data_state['target_type'] = 'peer'
+        db.set_user_state(user_id, "report_target", data_state)
         target = str(data_state.get('target', ''))
         target_lower = target.lower()
         if (
@@ -1033,7 +1078,9 @@ async def start_report_session(event):
                 progress_message=progress_message,
                 allowed_phones=allowed_phones,
                 reason_option=data.get('reason_option') or '',
+                reason_choices=data.get('reason_choices') or [],
                 dist_mode=dist_mode,
+                target_type=data.get('target_type') or 'channel_msgs',
             )
         else:
             await engine.run_report_session(
@@ -1046,7 +1093,9 @@ async def start_report_session(event):
                 progress_message=progress_message,
                 allowed_phones=allowed_phones,
                 reason_option=data.get('reason_option') or '',
+                reason_choices=data.get('reason_choices') or [],
                 dist_mode=dist_mode,
+                target_type=data.get('target_type') or 'channel_msgs',
             )
     except Exception as exc:
         error = redact_sensitive(exc, 300)

@@ -146,19 +146,19 @@ def parse_message_link(message_link: str) -> tuple:
     if "/c/" in clean_raw:
         parts = clean_raw.split("/c/", 1)
         sub_parts = parts[1].strip("/").split("/")
-        if len(sub_parts) >= 2 and sub_parts[0].isdigit() and sub_parts[1].isdigit():
-            return int(f"-100{sub_parts[0]}"), int(sub_parts[1])
+        if len(sub_parts) >= 2 and sub_parts[0].isdigit() and sub_parts[-1].isdigit():
+            return int(f"-100{sub_parts[0]}"), int(sub_parts[-1])
         raise ValueError("Private message link is invalid.")
 
     clean_link = clean_raw.replace("https://", "").replace("http://", "")
     clean_link = clean_link.replace("t.me/", "").replace("telegram.me/", "")
-    parts = clean_link.split("/")
+    parts = clean_link.strip("/").split("/")
     if len(parts) >= 2:
-        chat_ref, message_id = parts[0], parts[1]
-        try:
-            return chat_ref, int(message_id)
-        except ValueError:
-            pass
+        chat_ref = parts[0]
+        if chat_ref.startswith("@"):
+            chat_ref = chat_ref[1:]
+        if parts[-1].isdigit():
+            return chat_ref, int(parts[-1])
     raise ValueError("Message link is invalid.")
 
 
@@ -381,50 +381,101 @@ class SessionManager:
             await client.connect()
             
             if not await client.is_user_authorized():
-                await client.send_code_request(phone)
+                sent_code = await client.send_code_request(phone)
+                phone_code_hash = getattr(sent_code, "phone_code_hash", None)
+
+                login_buttons = [
+                    [Button.inline("🔄 Resend OTP (SMS)", b"login_resend_otp"),
+                     Button.inline("❌ Cancel Login", b"ui_cancel")],
+                ]
                 await progress_message.edit(
-                    f"Login for: {mask_phone(phone)}\n\n"
-                    f"OTP sent successfully!\n"
-                    f"Please send the verification code as a text message."
+                    f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                    f"📲 **OTP sent successfully!**\n"
+                    f"Check Telegram or SMS on your phone.\n\n"
+                    f"Send the verification code as a message here,\n"
+                    f"or tap **Resend OTP** if you didn't receive it.",
+                    buttons=login_buttons
                 )
                 
-                # Create event and wait
                 event = asyncio.Event()
-                active_operations[user_id] = {'event': event, 'data': {}}
+                active_operations[user_id] = {
+                    'event': event,
+                    'data': {'phone_code_hash': phone_code_hash},
+                    'client': client,
+                    'phone': phone,
+                    'progress_message': progress_message,
+                }
                 
-                # Wait for message handler to set the event
-                await event.wait()
-                if active_operations[user_id]['data'].get('cancelled'):
-                    raise ValueError("Login cancelled by user.")
-                
-                # Get OTP from data
-                otp = (active_operations[user_id]['data'].get('otp') or '').strip()
-                if not otp:
-                    raise ValueError("No verification code received.")
-                
-                try:
-                    await client.sign_in(phone, code=otp)
-                except Exception as e:
-                    # Check for 2FA
-                    from telethon.errors import SessionPasswordNeededError
-                    if isinstance(e, SessionPasswordNeededError):
-                        await progress_message.edit(
-                            f" 2FA is enabled for {mask_phone(phone)}\n"
-                            f"Please send your 2FA password as a text message."
-                        )
-                        # Reset event and wait for password
+                from telethon.errors import (
+                    SessionPasswordNeededError,
+                    PhoneCodeInvalidError,
+                    PhoneCodeExpiredError,
+                    PasswordHashInvalidError
+                )
+
+                while True:
+                    await event.wait()
+                    op_data = active_operations.get(user_id, {}).get('data', {})
+                    if op_data.get('cancelled'):
+                        raise ValueError("Login cancelled by user.")
+                    
+                    otp = (op_data.get('otp') or '').strip()
+                    if not otp:
+                        raise ValueError("No verification code received.")
+                    
+                    try:
+                        await client.sign_in(phone, code=otp)
+                        break
+                    except PhoneCodeInvalidError:
                         event.clear()
-                        state_data = active_operations[user_id]['data']
-                        state_data['awaiting_password'] = True
-                        await event.wait()
-                        if state_data.get('cancelled'):
-                            raise ValueError("Login cancelled by user.")
-                        password = (state_data.get('password') or '').strip()
-                        if not password:
-                            raise ValueError("No 2FA password received.")
-                        await client.sign_in(password=password)
-                    else:
-                        raise e
+                        op_data.pop('otp', None)
+                        await progress_message.edit(
+                            f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                            f"❌ **Invalid verification code!**\n\n"
+                            f"Please re-check and send the correct code,\n"
+                            f"or tap **Resend OTP** below.",
+                            buttons=login_buttons
+                        )
+                    except PhoneCodeExpiredError:
+                        event.clear()
+                        op_data.pop('otp', None)
+                        await client.send_code_request(phone)
+                        await progress_message.edit(
+                            f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                            f"⚠️ **Code expired! A new OTP was sent.**\n\n"
+                            f"Please send the new verification code:",
+                            buttons=login_buttons
+                        )
+                    except SessionPasswordNeededError:
+                        event.clear()
+                        op_data['awaiting_password'] = True
+                        two_fa_buttons = [[Button.inline("❌ Cancel Login", b"ui_cancel")]]
+                        await progress_message.edit(
+                            f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                            f"🔐 **Two-Step Verification (2FA) is enabled!**\n\n"
+                            f"Please send your 2FA password as a text message:",
+                            buttons=two_fa_buttons
+                        )
+                        while True:
+                            await event.wait()
+                            if op_data.get('cancelled'):
+                                raise ValueError("Login cancelled by user.")
+                            password = (op_data.get('password') or '').strip()
+                            if not password:
+                                raise ValueError("No 2FA password received.")
+                            try:
+                                await client.sign_in(password=password)
+                                break
+                            except PasswordHashInvalidError:
+                                event.clear()
+                                op_data.pop('password', None)
+                                await progress_message.edit(
+                                    f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                                    f"❌ **Incorrect 2FA password!**\n\n"
+                                    f"Please send the correct password:",
+                                    buttons=two_fa_buttons
+                                )
+                        break
                 
             # Save session
             session_file = f"{session_name}.session"
@@ -542,6 +593,45 @@ async def scrape_recent_messages(target: str, limit: int = 10, phone: str = None
         raise last_error
     raise Exception("No active account was able to fetch messages.")
 
+async def get_target_profile_photos(target: str, limit: int = 10) -> list:
+    """Fetch profile photos for target using an active connected account."""
+    active_accounts = db.get_active_accounts()
+    if not active_accounts:
+        return []
+    for account in active_accounts:
+        phone, session_file = account[1], account[2]
+        session_path = resolve_session_path(session_file, phone)
+        if not session_path:
+            continue
+        proxy_tuple = get_telethon_proxy(account[4], account[5], account[6], account[7], account[8])
+        base_session = session_path[:-8] if session_path.lower().endswith('.session') else session_path
+        client = TelegramClient(base_session, API_ID, API_HASH, proxy=proxy_tuple)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                continue
+            s = str(target).strip()
+            if s.startswith('@'):
+                s = s[1:]
+            if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+                try:
+                    entity = await client.get_entity(int(s))
+                except Exception:
+                    from telethon.tl.types import PeerUser
+                    entity = await client.get_entity(PeerUser(int(s)))
+            else:
+                entity = await client.get_entity(s)
+            photos = await client.get_profile_photos(entity, limit=limit)
+            return list(photos or [])
+        except Exception as e:
+            log_activity(f"Error fetching profile photos with {phone}: {e}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    return []
+
 class ReportEngine:
     def __init__(self, user_id: int):
         self.user_id = user_id
@@ -565,10 +655,10 @@ class ReportEngine:
                 return False
 
             try:
-                entity = await client.get_entity(chat_id)
+                entity = await self.resolve_entity(client, chat_id)
             except Exception:
                 try:
-                    entity = await client.get_entity(target)
+                    entity = await self.resolve_entity(client, target)
                 except Exception as e:
                     log_activity(f"Failed to get entity for {chat_id}: {str(e)}")
                     return False
@@ -775,40 +865,22 @@ class ReportEngine:
     async def report_peer(
         self, client: TelegramClient, peer_id: str, reason: str, comment: str = ""
     ) -> bool:
-        """Report a user or bot using the client"""
+        """Report a user, bot, channel, or group using the client"""
         try:
             try:
-                entity = await client.get_entity(peer_id)
+                entity = await self.resolve_entity(client, peer_id)
             except Exception as e:
                 log_activity(f"Failed to get entity for peer {peer_id}: {str(e)}")
                 return False
             
-            reason_obj = types.InputReportReasonSpam()
-            
-            if reason == "child_abuse":
-                reason_obj = types.InputReportReasonChildAbuse()
-            elif reason == "violence":
-                reason_obj = types.InputReportReasonViolence()
-            elif reason in ("illegal_drugs", "illegal_activities"):
-                reason_obj = types.InputReportReasonIllegalDrugs()
-            elif reason == "pornography":
-                reason_obj = types.InputReportReasonPornography()
-            elif reason == "fake"or reason == "scam":
-                reason_obj = types.InputReportReasonFake()
-            elif reason == "personal_details":
-                reason_obj = types.InputReportReasonPersonalDetails()
-            elif reason == "copyright":
-                reason_obj = types.InputReportReasonCopyright()
-            elif reason == "geo_irrelevant":
-                reason_obj = types.InputReportReasonGeoIrrelevant()
-            elif reason == "other":
-                reason_obj = types.InputReportReasonOther()
+            reason_obj = self._get_reason_obj(reason)
             
             from telethon.errors import FloodWaitError
             for attempt in range(2):
                 try:
+                    input_peer = await client.get_input_entity(entity)
                     await client(ReportPeerRequest(
-                        peer=entity,
+                        peer=input_peer,
                         reason=reason_obj,
                         message=comment or ''
                     ))
@@ -826,13 +898,58 @@ class ReportEngine:
             log_activity(f"Report peer error for {peer_id}: {str(e)}")
             return False
 
+    async def resolve_entity(self, client: TelegramClient, peer):
+        """Safely resolve an entity whether given by username, numeric User ID, link, or object."""
+        if hasattr(peer, 'id') and not isinstance(peer, (str, int)):
+            return peer
+        raw = str(peer).strip()
+        s = raw
+        if "://" in s:
+            s = s.split("://", 1)[1]
+        if s.lower().startswith(("t.me/", "telegram.me/")):
+            s = s.split("/", 1)[1]
+        s = s.split("?")[0].split("#")[0].strip("/")
+        if s.startswith("c/"):
+            sub = s.split("c/", 1)[1].strip("/").split("/")[0]
+            if sub.isdigit():
+                s = f"-100{sub}"
+        elif "/" in s and not s.startswith("+") and not s.startswith("joinchat/"):
+            s = s.split("/")[0]
+        if s.startswith("@"):
+            s = s[1:]
+        try:
+            if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+                return await client.get_entity(int(s))
+            return await client.get_entity(s)
+        except Exception:
+            try:
+                if s.isdigit():
+                    from telethon.tl.types import PeerUser
+                    return await client.get_entity(PeerUser(int(s)))
+            except Exception:
+                pass
+            try:
+                return await client.get_entity(raw)
+            except Exception:
+                pass
+            return await client.get_entity(peer)
+
     async def report_profile_photo(
-        self, client: TelegramClient, peer_id: str, reason: str, comment: str = ""
+        self, client: TelegramClient, peer_id, photo_or_id=None, reason: str = "spam", comment: str = ""
     ) -> bool:
-        """Report profile photo of a user, group, or channel."""
+        """Report profile photo of a user, group, or channel.
+        
+        Supports passing photo object / ID explicitly, or falls back to legacy (peer_id, reason, comment).
+        """
+        # Handle legacy 4-arg signature where photo_or_id is actually reason string
+        if isinstance(photo_or_id, str) and not comment and reason == "spam":
+            comment = reason
+            reason = photo_or_id
+            photo_or_id = None
+
         try:
             try:
-                entity = await client.get_entity(peer_id)
+                entity = await self.resolve_entity(client, peer_id)
             except Exception as e:
                 log_activity(f"Failed to get entity for photo report {peer_id}: {str(e)}")
                 return False
@@ -840,17 +957,32 @@ class ReportEngine:
             from telethon.tl.functions.account import ReportProfilePhotoRequest
             from telethon.errors import FloodWaitError
 
-            photos = await client.get_profile_photos(entity, limit=1)
-            if not photos:
-                log_activity(f"No profile photo found for {peer_id}; falling back to peer report")
-                return await self.report_peer(client, peer_id, reason, comment)
+            input_photo = None
+            if hasattr(photo_or_id, 'id') and hasattr(photo_or_id, 'access_hash'):
+                if isinstance(photo_or_id, types.InputPhoto):
+                    input_photo = photo_or_id
+                else:
+                    input_photo = types.InputPhoto(
+                        id=photo_or_id.id,
+                        access_hash=photo_or_id.access_hash,
+                        file_reference=getattr(photo_or_id, 'file_reference', b'') or b'',
+                    )
+            else:
+                photos = await client.get_profile_photos(entity, limit=10)
+                if not photos:
+                    log_activity(f"No profile photo found for {peer_id}; falling back to peer report")
+                    return await self.report_peer(client, peer_id, reason, comment)
 
-            photo = photos[0]
-            input_photo = types.InputPhoto(
-                id=photo.id,
-                access_hash=photo.access_hash,
-                file_reference=photo.file_reference,
-            )
+                if isinstance(photo_or_id, int) and 1 <= photo_or_id <= len(photos):
+                    photo = photos[photo_or_id - 1]
+                else:
+                    photo = photos[0]
+
+                input_photo = types.InputPhoto(
+                    id=photo.id,
+                    access_hash=photo.access_hash,
+                    file_reference=getattr(photo, 'file_reference', b'') or b'',
+                )
 
             reason_obj = types.InputReportReasonSpam()
             if reason == "child_abuse":
@@ -912,29 +1044,56 @@ class ReportEngine:
         
         total_accounts = len(active_accounts)
         items_list = list(message_links) if message_links else [None]
-        total_assigned = 0
+
+        # Precompute exact execution spec for each account
+        account_execution_specs = []
+        total_reports = 0
+
         for a_idx, a_acc in enumerate(active_accounts):
             a_phone = a_acc[1]
             a_rule = (account_rules or {}).get(a_phone) or {}
+
+            # 1. Assigned message items
             if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
                 r_indices = a_rule.get("messages")
                 if isinstance(r_indices, list):
-                    a_count = len([i for i in r_indices if 0 <= i < len(message_links)])
+                    a_items = [message_links[i] for i in r_indices if 0 <= i < len(message_links)]
                 else:
-                    a_count = len(items_list)
-                total_assigned += max(1, a_count)
+                    a_items = items_list
+                if not a_items:
+                    a_items = items_list
             elif dist_mode == "round_robin" and message_links:
                 num_msgs = len(message_links)
                 if total_accounts <= num_msgs:
-                    a_count = len([m for i, m in enumerate(message_links) if i % total_accounts == a_idx])
+                    a_items = [m for i, m in enumerate(message_links) if i % total_accounts == a_idx]
                 else:
-                    a_count = 1
-                total_assigned += a_count
-            elif dist_mode in ("auto_distribute", "split"):
-                total_assigned += 1 if not message_links else len(items_list)
+                    a_items = [message_links[a_idx % num_msgs]]
             else:
-                total_assigned += len(items_list)
-        total_reports = total_assigned * reports_per_account
+                a_items = items_list
+
+            # 2. Assigned reasons
+            if a_rule.get("reasons"):
+                a_choices = list(a_rule.get("reasons"))
+            elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
+                a_choices = [reason_choices[a_idx % len(reason_choices)]]
+            elif reason_choices:
+                a_choices = list(reason_choices)
+            else:
+                a_choices = [{
+                    "reason": reason or "spam",
+                    "detail": (reason or "spam").capitalize(),
+                    "option": reason_option or "",
+                }]
+
+            # 3. Iterations per message: in Full Mass ('all') ensure every selected reason executes
+            if len(a_choices) > 1 and dist_mode not in ("auto_distribute", "split", "round_robin"):
+                a_reps = max(reports_per_account, len(a_choices))
+            else:
+                a_reps = max(1, reports_per_account)
+
+            account_execution_specs.append((a_items, a_choices, a_reps, a_rule))
+            total_reports += len(a_items) * a_reps
+
         completed_reports = 0
         success_count = 0
         failed_count = 0
@@ -948,6 +1107,8 @@ class ReportEngine:
 
             account_id, phone, session_file, status, proxy_type, proxy_ip, proxy_port, proxy_user, proxy_pass = account
             client = None
+
+            acc_items, choices, effective_reps, a_rule = account_execution_specs[acc_idx]
 
             try:
                 session_path = resolve_session_path(session_file, phone)
@@ -970,51 +1131,17 @@ class ReportEngine:
                         continue
                     log_activity(f"Account {phone} joined {target} ({join_message})")
 
-                a_rule = (account_rules or {}).get(phone) or {}
-                if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
-                    r_indices = a_rule.get("messages")
-                    if isinstance(r_indices, list):
-                        acc_items = [message_links[i] for i in r_indices if 0 <= i < len(message_links)]
-                    else:
-                        acc_items = items_list
-                    if not acc_items:
-                        acc_items = items_list
-                elif dist_mode == "round_robin" and message_links:
-                    num_msgs = len(message_links)
-                    if total_accounts <= num_msgs:
-                        acc_items = [m for i, m in enumerate(message_links) if i % total_accounts == acc_idx]
-                    else:
-                        acc_items = [message_links[acc_idx % num_msgs]]
-                else:
-                    acc_items = items_list
-
                 for msg_idx, message_link in enumerate(acc_items):
                     if self.should_stop:
                         break
 
-                    for report_num in range(reports_per_account):
+                    for report_num in range(effective_reps):
                         if self.should_stop:
                             break
 
                         await set_account_online(client, offline=False)
 
-                        if a_rule.get("reasons"):
-                            choices = a_rule.get("reasons")
-                        elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
-                            choices = [reason_choices[acc_idx % len(reason_choices)]]
-                        else:
-                            choices = reason_choices or []
-
-                        if len(choices) >= 2:
-                            choice = choices[report_num % len(choices)]
-                        elif len(choices) == 1:
-                            choice = choices[0]
-                        else:
-                            choice = {
-                                "reason": reason or "spam",
-                                "detail": (reason or "spam").capitalize(),
-                                "option": reason_option or "",
-                            }
+                        choice = choices[report_num % len(choices)]
                         report_reason = choice.get("reason") or reason or "spam"
                         report_option = choice.get("option") or reason_option or ""
                         report_label = choice.get("detail") or report_reason
@@ -1033,11 +1160,11 @@ class ReportEngine:
                             else:
                                 report_comment = ""
 
-                        if target_type in ("channel_pfp", "group_pfp", "account_pfp", "bot_pfp"):
+                        if "pfp" in target_type:
                             success = await self.report_profile_photo(
-                                client, target, report_reason, report_comment
+                                client, target, None, report_reason, report_comment
                             )
-                        elif target_type in ("channel_peer", "group_peer", "account_profile", "bot_profile") or not message_link:
+                        elif "peer" in target_type or "profile" in target_type or not message_link:
                             success = await self.report_peer(
                                 client, target, report_reason, report_comment
                             )
@@ -1068,7 +1195,8 @@ class ReportEngine:
                             f"Account: {acc_idx + 1}/{total_accounts}\n"
                             f"Phone: {mask_phone(phone)}\n"
                             f"Message: {msg_idx + 1}/{len(acc_items)}\n"
-                            f"Reports: {report_num + 1}/{reports_per_account}\n\n"
+                            f"Reports: {report_num + 1}/{effective_reps}\n"
+                            f"Reason: {report_label}\n\n"
                             f"{progress_bar}\n\n"
                             f"Success: {success_count}\n"
                             f"Failed: {failed_count}\n"
@@ -1139,29 +1267,53 @@ class ReportEngine:
         
         total_accounts = len(active_accounts)
         items_list = list(message_links) if message_links else [None]
-        total_assigned = 0
+
+        # Precompute exact execution spec for each account
+        account_execution_specs = {}
+        total_reports = 0
+
         for a_idx, a_acc in enumerate(active_accounts):
             a_phone = a_acc[1]
             a_rule = (account_rules or {}).get(a_phone) or {}
+
             if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
                 r_indices = a_rule.get("messages")
                 if isinstance(r_indices, list):
-                    a_count = len([i for i in r_indices if 0 <= i < len(message_links)])
+                    a_items = [message_links[i] for i in r_indices if 0 <= i < len(message_links)]
                 else:
-                    a_count = len(items_list)
-                total_assigned += max(1, a_count)
+                    a_items = items_list
+                if not a_items:
+                    a_items = items_list
             elif dist_mode == "round_robin" and message_links:
                 num_msgs = len(message_links)
                 if total_accounts <= num_msgs:
-                    a_count = len([m for i, m in enumerate(message_links) if i % total_accounts == a_idx])
+                    a_items = [m for i, m in enumerate(message_links) if i % total_accounts == a_idx]
                 else:
-                    a_count = 1
-                total_assigned += a_count
-            elif dist_mode in ("auto_distribute", "split"):
-                total_assigned += 1 if not message_links else len(items_list)
+                    a_items = [message_links[a_idx % num_msgs]]
             else:
-                total_assigned += len(items_list)
-        total_reports = total_assigned * reports_per_account
+                a_items = items_list
+
+            if a_rule.get("reasons"):
+                a_choices = list(a_rule.get("reasons"))
+            elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
+                a_choices = [reason_choices[a_idx % len(reason_choices)]]
+            elif reason_choices:
+                a_choices = list(reason_choices)
+            else:
+                a_choices = [{
+                    "reason": reason or "spam",
+                    "detail": (reason or "spam").capitalize(),
+                    "option": reason_option or "",
+                }]
+
+            if len(a_choices) > 1 and dist_mode not in ("auto_distribute", "split", "round_robin"):
+                a_reps = max(reports_per_account, len(a_choices))
+            else:
+                a_reps = max(1, reports_per_account)
+
+            account_execution_specs[a_phone] = (a_items, a_choices, a_reps, a_rule)
+            total_reports += len(a_items) * a_reps
+
         completed_reports = 0
         success_count = 0
         failed_count = 0
@@ -1169,7 +1321,7 @@ class ReportEngine:
         start_time = datetime.now()
         progress_lock = asyncio.Lock()
         
-        async def update_progress_ui(phone: str, acc_num: int):
+        async def update_progress_ui(phone: str, acc_num: int, reason_lbl: str = None):
             async with progress_lock:
                 percentage = (completed_reports / total_reports) * 100 if total_reports > 0 else 100
                 progress_bar = create_progress_bar(percentage)
@@ -1182,7 +1334,7 @@ class ReportEngine:
                     f"Running {total_accounts} accounts in parallel...\n"
                     f"Active Worker: {mask_phone(phone)} (#{acc_num})\n"
                     f"Target: {target}\n"
-                    f"Reason: {reason}\n\n"
+                    f"Reason: {reason_lbl or reason}\n\n"
                     f"{progress_bar}\n\n"
                     f"Success: {success_count}\n"
                     f"Failed: {failed_count}\n"
@@ -1223,51 +1375,21 @@ class ReportEngine:
                         log_activity(f"[Worker {phone}] Not joined to {target}; skipping: {join_message}")
                         return
 
-                a_rule = (account_rules or {}).get(phone) or {}
-                if a_rule.get("messages") is not None and a_rule.get("messages") != "all" and message_links:
-                    r_indices = a_rule.get("messages")
-                    if isinstance(r_indices, list):
-                        acc_items = [message_links[i] for i in r_indices if 0 <= i < len(message_links)]
-                    else:
-                        acc_items = items_list
-                    if not acc_items:
-                        acc_items = items_list
-                elif dist_mode == "round_robin" and message_links:
-                    num_msgs = len(message_links)
-                    if total_accounts <= num_msgs:
-                        acc_items = [m for i, m in enumerate(message_links) if i % total_accounts == account_idx]
-                    else:
-                        acc_items = [message_links[account_idx % num_msgs]]
-                else:
-                    acc_items = items_list
+                acc_items, choices, effective_reps, a_rule = account_execution_specs.get(
+                    phone, (items_list, [{}], max(1, reports_per_account), {})
+                )
 
                 for msg_idx, message_link in enumerate(acc_items):
                     if self.should_stop:
                         break
 
-                    for report_num in range(reports_per_account):
+                    for report_num in range(effective_reps):
                         if self.should_stop:
                             break
 
                         await set_account_online(client, offline=False)
 
-                        if a_rule.get("reasons"):
-                            choices = a_rule.get("reasons")
-                        elif dist_mode in ("auto_distribute", "split", "round_robin") and reason_choices:
-                            choices = [reason_choices[account_idx % len(reason_choices)]]
-                        else:
-                            choices = reason_choices or []
-
-                        if len(choices) >= 2:
-                            choice = choices[report_num % len(choices)]
-                        elif len(choices) == 1:
-                            choice = choices[0]
-                        else:
-                            choice = {
-                                "reason": reason or "spam",
-                                "detail": (reason or "spam").capitalize(),
-                                "option": reason_option or "",
-                            }
+                        choice = choices[report_num % len(choices)]
                         report_reason = choice.get("reason") or reason or "spam"
                         report_option = choice.get("option") or reason_option or ""
                         report_label = choice.get("detail") or report_reason
@@ -1286,11 +1408,11 @@ class ReportEngine:
                             else:
                                 report_comment = ""
 
-                        if target_type in ("channel_pfp", "group_pfp", "account_pfp", "bot_pfp"):
+                        if "pfp" in target_type:
                             success = await self.report_profile_photo(
-                                client, target, report_reason, report_comment
+                                client, target, None, report_reason, report_comment
                             )
-                        elif target_type in ("channel_peer", "group_peer", "account_profile", "bot_profile") or not message_link:
+                        elif "peer" in target_type or "profile" in target_type or not message_link:
                             success = await self.report_peer(
                                 client, target, report_reason, report_comment
                             )
@@ -1311,7 +1433,7 @@ class ReportEngine:
 
                             completed_reports += 1
 
-                        await update_progress_ui(phone, account_idx + 1)
+                        await update_progress_ui(phone, account_idx + 1, report_label)
                         await asyncio.sleep(0.5)
 
                 db.update_account_status(phone, "active")
@@ -1613,7 +1735,7 @@ class ReportEngine:
                     pass
 
                 try:
-                    entity = await client.get_entity(target)
+                    entity = await self.resolve_entity(client, target)
                 except Exception as e:
                     log_activity(f"Failed to get entity {target} for {phone}: {e}")
                     continue
@@ -1743,7 +1865,7 @@ class ReportEngine:
                     pass
 
                 try:
-                    entity = await client.get_entity(target)
+                    entity = await self.resolve_entity(client, target)
                 except Exception as e:
                     log_activity(f"Failed to get entity {target} for {phone}: {e}")
                     return
