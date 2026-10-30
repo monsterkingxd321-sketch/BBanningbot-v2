@@ -2,20 +2,18 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
-from telethon import TelegramClient, types, errors as tg_errors
+from telethon import TelegramClient, types, utils, errors as tg_errors
 from telethon.tl.functions.messages import ReportRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.account import ReportPeerRequest, UpdateStatusRequest
+from telethon.tl.functions.account import ReportPeerRequest, UpdateStatusRequest, ReportProfilePhotoRequest
 from config import LOGS_FOLDER, SESSIONS_FOLDER, API_ID, API_HASH
 from bot import db, active_operations
 from utils.review_utils import redact_sensitive
 from utils.message_utils import is_reportable_post
 
 def mask_phone(phone: str) -> str:
-    """Mask phone number for display"""
-    if phone and len(phone) > 6:
-        return phone[:4] + "XXXX" + phone[-3:]
-    return phone or "unknown"
+    """Return full phone number without masking (per user request)."""
+    return str(phone) if phone else "unknown"
 
 def create_progress_bar(percentage: float, length: int = 10) -> str:
     """Create a plain-text progress bar."""
@@ -130,7 +128,9 @@ def parse_message_link(message_link: str) -> tuple:
     if not raw:
         raise ValueError("Message link is empty.")
 
-    if raw.lower().startswith("tg://privatepost"):
+    clean_raw = raw.split("?")[0].split("#")[0].strip()
+
+    if clean_raw.lower().startswith("tg://privatepost"):
         from urllib.parse import parse_qs, urlparse
         query = parse_qs(urlparse(raw).query)
         channel = (query.get("channel") or [""])[0]
@@ -139,16 +139,16 @@ def parse_message_link(message_link: str) -> tuple:
             return int(f"-100{channel}"), int(post)
         raise ValueError("Private post link is invalid.")
 
-    if "/c/" in raw:
-        parts = raw.split("/c/", 1)
-        sub_parts = parts[1].split("/")
+    if "/c/" in clean_raw:
+        parts = clean_raw.split("/c/", 1)
+        sub_parts = parts[1].strip("/").split("/")
         if len(sub_parts) >= 2 and sub_parts[0].isdigit() and sub_parts[1].isdigit():
             return int(f"-100{sub_parts[0]}"), int(sub_parts[1])
         raise ValueError("Private message link is invalid.")
 
-    clean_link = raw.replace("https://", "").replace("http://", "")
+    clean_link = clean_raw.replace("https://", "").replace("http://", "")
     clean_link = clean_link.replace("t.me/", "").replace("telegram.me/", "")
-    parts = clean_link.split("?")[0].split("/")
+    parts = clean_link.split("/")
     if len(parts) >= 2:
         chat_ref, message_id = parts[0], parts[1]
         try:
@@ -193,7 +193,10 @@ def parse_target_identifier(target: str) -> tuple:
     if value.startswith("@"):
         value = value[1:]
     if value.startswith("c/"):
-        raise ValueError("Private message links cannot be used as a join target.")
+        sub = value.split("c/", 1)[1].strip("/").split("/")[0]
+        if sub.isdigit():
+            return "id", int(f"-100{sub}")
+        raise ValueError("Private message link has invalid channel ID.")
 
     # For t.me/channel/123, the join target is the channel username.
     value = value.split("/", 1)[0]
@@ -219,7 +222,17 @@ async def ensure_account_joined(client: TelegramClient, target: str) -> tuple:
             await client(ImportChatInviteRequest(value))
             return
         entity = value
-        if kind == "username":
+        if kind == "id":
+            try:
+                await client.get_entity(value)
+                return
+            except Exception:
+                try:
+                    await client(JoinChannelRequest(value))
+                    return
+                except Exception:
+                    pass
+        elif kind == "username":
             try:
                 entity = await client.get_entity(value)
                 if isinstance(entity, types.User):
@@ -703,6 +716,58 @@ class ReportEngine:
             log_activity(f"Report error for {message_link}: {str(e)}")
             return False
             
+    def _get_reason_obj(self, reason: str):
+        if reason == "child_abuse":
+            return types.InputReportReasonChildAbuse()
+        elif reason == "violence":
+            return types.InputReportReasonViolence()
+        elif reason in ("illegal_drugs", "illegal_activities"):
+            return types.InputReportReasonIllegalDrugs()
+        elif reason == "pornography":
+            return types.InputReportReasonPornography()
+        elif reason == "fake" or reason == "scam":
+            return types.InputReportReasonFake()
+        elif reason == "personal_details":
+            return types.InputReportReasonPersonalDetails()
+        elif reason == "copyright":
+            return types.InputReportReasonCopyright()
+        elif reason == "geo_irrelevant":
+            return types.InputReportReasonGeoIrrelevant()
+        elif reason == "other":
+            return types.InputReportReasonOther()
+        return types.InputReportReasonSpam()
+
+    async def report_profile_photo(
+        self, client: TelegramClient, peer: any, photo: any, reason: str, comment: str = ""
+    ) -> bool:
+        """Report a profile photo or video of an entity"""
+        try:
+            input_photo = utils.get_input_photo(photo)
+            entity = await client.get_input_entity(peer)
+            reason_obj = self._get_reason_obj(reason)
+            from telethon.errors import FloodWaitError
+            for attempt in range(2):
+                try:
+                    await client(ReportProfilePhotoRequest(
+                        peer=entity,
+                        photo_id=input_photo,
+                        reason=reason_obj,
+                        message=comment or ''
+                    ))
+                    return True
+                except FloodWaitError as fe:
+                    log_activity(f"FloodWait on profile photo report: waiting {fe.seconds}s")
+                    if fe.seconds > 10:
+                        return False
+                    await asyncio.sleep(fe.seconds)
+                except Exception as e:
+                    log_activity(f"Profile photo report execution error: {str(e)}")
+                    return False
+            return False
+        except Exception as e:
+            log_activity(f"Report profile photo error: {str(e)}")
+            return False
+
     async def report_peer(
         self, client: TelegramClient, peer_id: str, reason: str, comment: str = ""
     ) -> bool:
@@ -1496,3 +1561,256 @@ class ReportEngine:
             await progress_message.edit(final_text)
         except:
             pass
+
+    async def run_profile_photo_report_session(
+        self, target: str, pfp_mode: str, pfp_indices: list, reports_per_account: int,
+        delay: int, reason: str, comment: str, progress_message, allowed_phones=None
+    ):
+        """Run profile photo/video reporting session sequentially."""
+        active_accounts = db.get_active_accounts()
+        if allowed_phones is not None:
+            allowed_phones = set(allowed_phones)
+            active_accounts = [acc for acc in active_accounts if acc[1] in allowed_phones]
+        if not active_accounts:
+            await progress_message.edit("No active accounts available.")
+            return {"success": 0, "failed": 0, "completed": 0, "total": 0}
+
+        completed_reports = 0
+        success_count = 0
+        failed_count = 0
+        total_accounts = len(active_accounts)
+
+        num_photos_est = 1 if pfp_mode == 'single' else (len(pfp_indices) if isinstance(pfp_indices, list) else 1)
+        total_reports = total_accounts * reports_per_account * max(1, num_photos_est)
+        start_time = datetime.now()
+
+        for acc_idx, account in enumerate(active_accounts):
+            if self.should_stop:
+                await progress_message.edit("Report session stopped by user!")
+                break
+
+            account_id, phone, session_file, status, proxy_type, proxy_ip, proxy_port, proxy_user, proxy_pass = account
+            client = None
+            try:
+                session_path = resolve_session_path(session_file, phone)
+                if not session_path:
+                    continue
+                proxy_tuple = get_telethon_proxy(proxy_type, proxy_ip, proxy_port, proxy_user, proxy_pass)
+                base_session = session_path[:-8] if session_path.lower().endswith('.session') else session_path
+                client = TelegramClient(base_session, API_ID, API_HASH, proxy=proxy_tuple)
+                await client.connect()
+                await set_account_online(client, offline=False)
+
+                try:
+                    kind, _ = parse_target_identifier(target)
+                    if kind in ("invite", "username", "id"):
+                        await ensure_account_joined(client, target)
+                except Exception:
+                    pass
+
+                try:
+                    entity = await client.get_entity(target)
+                except Exception as e:
+                    log_activity(f"Failed to get entity {target} for {phone}: {e}")
+                    continue
+
+                photos = await client.get_profile_photos(entity)
+                if not photos:
+                    log_activity(f"No profile photos found for {target} with {phone}")
+                    continue
+
+                if pfp_mode == 'single':
+                    target_photos = [photos[0]]
+                elif pfp_mode == 'all':
+                    target_photos = list(photos)
+                elif isinstance(pfp_indices, list):
+                    target_photos = []
+                    for idx in pfp_indices:
+                        if 1 <= idx <= len(photos):
+                            target_photos.append(photos[idx - 1])
+                    if not target_photos:
+                        target_photos = [photos[0]]
+                else:
+                    target_photos = [photos[0]]
+
+                for p_idx, photo in enumerate(target_photos):
+                    for rep_i in range(reports_per_account):
+                        if self.should_stop:
+                            break
+                        res = await self.report_profile_photo(client, entity, photo, reason, comment)
+                        if res:
+                            success_count += 1
+                        else:
+                            failed_count += 1
+                        completed_reports += 1
+
+                        pct = (completed_reports / max(1, total_reports)) * 100
+                        pbar = create_progress_bar(pct)
+                        try:
+                            await progress_message.edit(
+                                f"**Profile Media Reporting in Progress...**\n\n"
+                                f"Target: `{target}`\n"
+                                f"Worker: `{phone}` (#{acc_idx + 1}/{total_accounts})\n"
+                                f"Photo: #{p_idx + 1}/{len(target_photos)} (Report {rep_i + 1}/{reports_per_account})\n"
+                                f"Progress: {pbar} ({completed_reports}/{total_reports})\n"
+                                f"Success: {success_count} | Failed: {failed_count}"
+                            )
+                        except Exception:
+                            pass
+
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+
+                await set_account_online(client, offline=True)
+                await client.disconnect()
+            except Exception as e:
+                log_activity(f"Error in profile photo reporting for {phone}: {e}")
+            finally:
+                if client and client.is_connected():
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+        db.add_report_stats(total_reports, success_count, failed_count)
+        return {"success": success_count, "failed": failed_count, "completed": completed_reports, "total": total_reports}
+
+    async def run_parallel_profile_photo_report_session(
+        self, target: str, pfp_mode: str, pfp_indices: list, reports_per_account: int,
+        reason: str, comment: str, progress_message, allowed_phones=None
+    ):
+        """Run profile photo/video reporting session in parallel (Turbo mode)."""
+        active_accounts = db.get_active_accounts()
+        if allowed_phones is not None:
+            allowed_phones = set(allowed_phones)
+            active_accounts = [acc for acc in active_accounts if acc[1] in allowed_phones]
+        if not active_accounts:
+            await progress_message.edit("No active accounts available.")
+            return {"success": 0, "failed": 0, "completed": 0, "total": 0}
+
+        completed_reports = 0
+        success_count = 0
+        failed_count = 0
+        total_accounts = len(active_accounts)
+        progress_lock = asyncio.Lock()
+
+        num_photos_est = 1 if pfp_mode == 'single' else (len(pfp_indices) if isinstance(pfp_indices, list) else 1)
+        total_reports = total_accounts * reports_per_account * max(1, num_photos_est)
+        start_time = datetime.now()
+
+        async def update_progress_ui(phone, acc_num, photo_num, total_photos):
+            pct = (completed_reports / max(1, total_reports)) * 100
+            pbar = create_progress_bar(pct)
+            try:
+                await progress_message.edit(
+                    f"**Turbo Profile Media Reporting...**\n\n"
+                    f"Target: `{target}`\n"
+                    f"Active Worker: `{phone}` (#{acc_num})\n"
+                    f"Photo: #{photo_num}/{total_photos}\n"
+                    f"Progress: {pbar} ({completed_reports}/{total_reports})\n"
+                    f"Success: {success_count} | Failed: {failed_count}\n"
+                    f"Mode: Turbo (Parallel)"
+                )
+            except Exception:
+                pass
+
+        async def photo_worker(account_idx, account):
+            nonlocal completed_reports, success_count, failed_count
+            if self.should_stop:
+                return
+
+            account_id, phone, session_file, status, proxy_type, proxy_ip, proxy_port, proxy_user, proxy_pass = account
+            client = None
+            try:
+                session_path = resolve_session_path(session_file, phone)
+                if not session_path:
+                    return
+                proxy_tuple = get_telethon_proxy(proxy_type, proxy_ip, proxy_port, proxy_user, proxy_pass)
+                base_session = session_path[:-8] if session_path.lower().endswith('.session') else session_path
+                client = TelegramClient(base_session, API_ID, API_HASH, proxy=proxy_tuple)
+                await client.connect()
+                await set_account_online(client, offline=False)
+
+                try:
+                    kind, _ = parse_target_identifier(target)
+                    if kind in ("invite", "username", "id"):
+                        await ensure_account_joined(client, target)
+                except Exception:
+                    pass
+
+                try:
+                    entity = await client.get_entity(target)
+                except Exception as e:
+                    log_activity(f"Failed to get entity {target} for {phone}: {e}")
+                    return
+
+                photos = await client.get_profile_photos(entity)
+                if not photos:
+                    return
+
+                if pfp_mode == 'single':
+                    target_photos = [photos[0]]
+                elif pfp_mode == 'all':
+                    target_photos = list(photos)
+                elif isinstance(pfp_indices, list):
+                    target_photos = []
+                    for idx in pfp_indices:
+                        if 1 <= idx <= len(photos):
+                            target_photos.append(photos[idx - 1])
+                    if not target_photos:
+                        target_photos = [photos[0]]
+                else:
+                    target_photos = [photos[0]]
+
+                for p_idx, photo in enumerate(target_photos):
+                    for _ in range(reports_per_account):
+                        if self.should_stop:
+                            break
+                        res = await self.report_profile_photo(client, entity, photo, reason, comment)
+                        async with progress_lock:
+                            if res:
+                                success_count += 1
+                            else:
+                                failed_count += 1
+                            completed_reports += 1
+                        await update_progress_ui(phone, account_idx + 1, p_idx + 1, len(target_photos))
+                        await asyncio.sleep(0.5)
+
+                await set_account_online(client, offline=True)
+                await client.disconnect()
+            except Exception as e:
+                log_activity(f"[Pfp Worker {phone}] Error: {str(e)}")
+            finally:
+                if client and client.is_connected():
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+        tasks = []
+        sem = asyncio.Semaphore(10)
+        async def sem_worker(idx, account):
+            async with sem:
+                await photo_worker(idx, account)
+
+        for idx, account in enumerate(active_accounts):
+            tasks.append(sem_worker(idx, account))
+
+        await asyncio.gather(*tasks)
+
+        final_text = (
+            f"**Turbo Profile Media Report Complete**\n\n"
+            f"Mode: Turbo (Parallel)\n"
+            f"Total Reports: {completed_reports}/{total_reports}\n"
+            f"Successful: {success_count}\n"
+            f"Failed: {failed_count}\n"
+            f"Duration: {str(datetime.now() - start_time).split('.')[0]}\n"
+            f"Accounts Used: {total_accounts}\n\n"
+            f"Target: {target}\n"
+        )
+        try:
+            await progress_message.edit(final_text)
+        except Exception:
+            pass
+        db.add_report_stats(total_reports, success_count, failed_count)
+        return {"success": success_count, "failed": failed_count, "completed": completed_reports, "total": total_reports}

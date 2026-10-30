@@ -45,7 +45,7 @@ def mask_phone(phone: str) -> str:
         return "unknown"
     phone = str(phone)
     if len(phone) > 6:
-        return phone[:4] + "XXXX" + phone[-3:]
+        return phone
     return phone
 
 

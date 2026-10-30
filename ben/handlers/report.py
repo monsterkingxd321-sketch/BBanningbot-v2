@@ -107,32 +107,95 @@ async def show_manual_target_prompt(event, send: bool = True):
 
 
 async def show_target_type(event, data: dict, send: bool = True):
-    """Ask whether to report selected messages or the whole peer."""
+    """Ask whether to report specific messages, the whole peer, or profile media."""
     user_id = event.sender_id
     db.set_user_state(user_id, "report_target", data)
     target = str(data.get('target', ''))
     target_lower = target.lower()
     is_invite = (
-        't.me/+'in target_lower
-        or 'joinchat/'in target_lower
+        't.me/+' in target_lower
+        or 'joinchat/' in target_lower
         or target.strip().startswith('+')
-        or 'tg://join'in target_lower
+        or 'tg://join' in target_lower
     )
-    rows = [[Button.inline("Specific Messages", b"target_messages")]]
+    rows = [
+        [Button.inline("💬 Specific Messages", b"target_messages")],
+    ]
     if not is_invite:
-        rows[0].append(Button.inline("Whole Channel / Group", b"target_peer"))
+        rows[0].append(Button.inline("🏢 Whole Peer", b"target_peer"))
+    rows.append([Button.inline("🖼️ Profile Media (PFP / Video)", b"target_pfp")])
     rows.append([Button.inline("Main Menu", b"menu:home")])
     text = (
         "**Step 2/6 - Target Type**\n\n"
         f"Target: `{target}`\n\n"
-        "Do you want to report specific messages, or the whole channel/group peer?"
+        "Select what you want to report:\n"
+        "- **Specific Messages**: recent posts, manual links, or custom range\n"
+        "- **Whole Peer**: whole channel/group or user account\n"
+        "- **Profile Media**: profile pictures / videos (single, all, custom)"
     )
     if is_invite:
         text += (
             "\n\nPrivate invite targets do not support whole-channel peer reports. "
-            "Select specific messages instead."
+            "Select specific messages or profile media."
         )
     await _send_or_edit(event, text, rows, send=send)
+
+
+async def show_pfp_mode_step(event, data: dict, send: bool = True):
+    """Show options for reporting profile photo/video."""
+    user_id = event.sender_id
+    db.set_user_state(user_id, "report_pfp_mode", data)
+    text = (
+        "**Step 2/6 - Profile Media (PFP / Video)**\n\n"
+        f"Target: `{data.get('target', '')}`\n\n"
+        "Choose profile media reporting option:\n"
+        "- **Single Pic (Latest)**: reports the current profile picture/video\n"
+        "- **All Images / Videos**: reports all profile pictures/videos in history\n"
+        "- **Custom (By Number)**: choose specific photo/video number(s) (e.g. 1, 2)"
+    )
+    buttons = [
+        [Button.inline("Single Pic (Latest)", b"pfp_mode:single"),
+         Button.inline("All Images / Videos", b"pfp_mode:all")],
+        [Button.inline("Custom (By Number)", b"pfp_mode:custom")],
+        [Button.inline("Back", b"report_target_back"),
+         Button.inline("Main Menu", b"menu:home")],
+    ]
+    await _send_or_edit(event, text, buttons, send=send)
+
+
+async def show_pfp_custom_prompt(event, data: dict, send: bool = True):
+    """Prompt user to send specific photo/video numbers."""
+    user_id = event.sender_id
+    db.set_user_state(user_id, "report_pfp_custom", data)
+    text = (
+        "**Custom Profile Media Numbers**\n\n"
+        f"Target: `{data.get('target', '')}`\n\n"
+        "Send the photo/video number(s) to report:\n"
+        "- Example: `1` (for current/first profile photo)\n"
+        "- Example: `1, 2, 3` (for 1st, 2nd, and 3rd photos)\n"
+        "- Example: `1-5` (for first 5 photos)"
+    )
+    buttons = [
+        [Button.inline("Back", b"target_pfp")],
+        [Button.inline("Main Menu", b"menu:home")],
+    ]
+    await _send_or_edit(event, text, buttons, send=send)
+
+
+async def show_pfp_count_step(event, data: dict, send: bool = True):
+    """Show count step for profile photo reporting."""
+    mode_desc = data.get("pfp_mode", "single")
+    if mode_desc == "custom":
+        mode_desc = f"custom #{data.get('pfp_indices', [1])}"
+    await show_count_step(
+        event,
+        data,
+        send=send,
+        state="report_pfp_count",
+        max_count=MAX_REPORTS_PER_ACCOUNT,
+        title="Reports Per Account (Profile Media)",
+        prefix=f"Profile media mode: `{mode_desc}`.\n\n",
+    )
 
 
 async def show_scrape_prompt(event, data: dict, send: bool = True):
@@ -485,14 +548,15 @@ async def report_user_command(event):
         return
 
     buttons = [
-        [Button.inline("User", b"peer_type_user"),
-         Button.inline("Bot", b"peer_type_bot")],
+        [Button.inline("👤 Report User (Peer)", b"peer_type_user"),
+         Button.inline("🖼️ User Profile Media (PFP)", b"pfp_type_user")],
+        [Button.inline("🤖 Report Bot", b"peer_type_bot")],
         [Button.inline("Main Menu", b"menu:home")],
     ]
 
     await event.respond(
-        "**Report User/Bot**\n\n"
-        "Which account do you want to report?",
+        "**Report User / Bot**\n\n"
+        "Choose what you want to report:",
         buttons=buttons,
     )
 

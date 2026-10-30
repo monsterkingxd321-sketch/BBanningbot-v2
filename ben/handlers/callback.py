@@ -13,7 +13,12 @@ from utils.report_options import load_report_choices
 from utils.review_utils import redact_sensitive
 
 from handlers.start import show_main_menu
-from handlers.account import show_login_menu, show_accounts_menu, begin_login_count
+from handlers.account import (
+    show_login_menu,
+    show_accounts_menu,
+    begin_login_count,
+    show_delete_accounts_menu,
+)
 from handlers.report import (
     show_report_start,
     show_target_type,
@@ -28,10 +33,15 @@ from handlers.report import (
     show_message_reason_step,
     show_stored_reason_page,
     show_peer_reason_step,
+    show_pfp_mode_step,
+    show_pfp_custom_prompt,
+    show_pfp_count_step,
 )
 from handlers.report_ui import reason_display, reason_key_from_label
 from handlers.admin import (
     show_stats,
+    show_users_menu,
+    show_revoke_users_menu,
     list_users_command,
     broadcast_command,
     show_help,
@@ -111,7 +121,7 @@ async def _route_callback(event, user_id: int, data: str):
             if not db.is_admin(user_id):
                 await event.edit("Admin only.")
                 return
-            await list_users_command(event)
+            await show_users_menu(event, edit=True)
         elif action == "broadcast":
             db.clear_user_state(user_id)
             await broadcast_command(event)
@@ -160,7 +170,7 @@ async def _route_callback(event, user_id: int, data: str):
 
     if data.startswith("delay_pick:"):
         state, data_state = db.get_user_state(user_id)
-        if state != "report_delay":
+        if state not in ("report_delay", "report_pfp_delay"):
             await event.edit("Session expired. Start again from the menu.")
             return
         try:
@@ -169,7 +179,9 @@ async def _route_callback(event, user_id: int, data: str):
             await event.answer("Invalid delay.", alert=True)
             return
         data_state['delay'] = delay
-        if len(data_state.get('messages', [])) > 1:
+        if state == "report_pfp_delay":
+            await show_exec_mode_step(event, data_state, send=False, peer=True)
+        elif len(data_state.get('messages', [])) > 1:
             await show_dist_mode_step(event, data_state, send=False)
         else:
             data_state['dist_mode'] = 'round_robin'
@@ -245,6 +257,157 @@ async def _route_callback(event, user_id: int, data: str):
 
     if data == "report_manual_target":
         await show_manual_target_prompt(event, send=False)
+        return
+
+    # ------------------------------------------------------------------
+    # User Access Management callbacks
+    # ------------------------------------------------------------------
+    if data.startswith("users:"):
+        parts = data.split(":")
+        sub = parts[1] if len(parts) > 1 else ""
+        if not db.is_admin(user_id):
+            await event.answer("Admin only.", alert=True)
+            return
+        if sub == "add":
+            db.set_user_state(user_id, "users_add_id", {})
+            await event.edit(
+                "**Approve New User**\n\n"
+                "Send the Telegram User ID of the user you want to approve:\n"
+                "Example: `1234567890`",
+                buttons=[
+                    [Button.inline("Back to Users", b"menu:users")],
+                    [Button.inline("Main Menu", b"menu:home")],
+                ],
+            )
+        elif sub == "revoke_menu":
+            await show_revoke_users_menu(event, edit=True)
+        elif sub == "revoke_id" and len(parts) > 2:
+            try:
+                target_uid = int(parts[2])
+                db.revoke_user(target_uid)
+                await event.answer(f"User {target_uid} access revoked.", alert=True)
+            except Exception:
+                await event.answer("Failed to revoke.", alert=True)
+            await show_revoke_users_menu(event, edit=True)
+        elif sub == "revoke_manual":
+            db.set_user_state(user_id, "users_revoke_id", {})
+            await event.edit(
+                "**Revoke User Access**\n\n"
+                "Send the Telegram User ID to revoke access:\n"
+                "Example: `1234567890`",
+                buttons=[
+                    [Button.inline("Back to Users", b"menu:users")],
+                    [Button.inline("Main Menu", b"menu:home")],
+                ],
+            )
+        return
+
+    # ------------------------------------------------------------------
+    # Account Deletion callbacks
+    # ------------------------------------------------------------------
+    if data == "account_delete_menu":
+        await show_delete_accounts_menu(event, send=False)
+        return
+
+    if data.startswith("del_acc:"):
+        phone = data.split(":", 1)[1]
+        if db.remove_account(phone):
+            text = f"✅ Account `{phone}` has been successfully removed and its session deleted."
+        else:
+            text = f"Account `{phone}` was not found or already deleted."
+        buttons = [
+            [Button.inline("Delete Another", b"account_delete_menu"),
+             Button.inline("My Accounts", b"menu:accounts")],
+            [Button.inline("Main Menu", b"menu:home")],
+        ]
+        await event.edit(text, buttons=buttons)
+        return
+
+    if data == "del_acc_custom":
+        db.set_user_state(user_id, "remove_account", {"step": 1})
+        await event.edit(
+            "**Delete Account**\n\n"
+            "Send the phone number of the account you want to delete (with country code):\n"
+            "Example: `+919876543210`",
+            buttons=[
+                [Button.inline("Back to Accounts", b"menu:accounts")],
+                [Button.inline("Main Menu", b"menu:home")],
+            ],
+        )
+        return
+
+    # ------------------------------------------------------------------
+    # Profile Media (PFP / Video) callbacks
+    # ------------------------------------------------------------------
+    if data == "target_pfp":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['target_type'] = 'pfp'
+        db.set_user_state(user_id, "report_pfp_mode", data_state)
+        await show_pfp_mode_step(event, data_state, send=False)
+        return
+
+    if data == "report_target_back":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await show_report_start(event, edit=True)
+            return
+        await show_target_type(event, data_state, send=False)
+        return
+
+    if data.startswith("pfp_mode:"):
+        mode = data.split(":", 1)[1]
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['target_type'] = 'pfp'
+        data_state['pfp_mode'] = mode
+        if mode == 'single':
+            data_state['pfp_indices'] = [1]
+            await show_pfp_count_step(event, data_state, send=False)
+        elif mode == 'all':
+            data_state['pfp_indices'] = 'all'
+            await show_pfp_count_step(event, data_state, send=False)
+        elif mode == 'custom':
+            await show_pfp_custom_prompt(event, data_state, send=False)
+        return
+
+    if data == "pfp_type_user":
+        data_state = {"type": "user", "target_type": "pfp", "step": 2}
+        db.set_user_state(user_id, "report_user_pfp_target", data_state)
+        await event.edit(
+            "**Report User Profile Media (PFP / Video)**\n\n"
+            "Send the user username or ID:",
+            buttons=[[Button.inline("Main Menu", b"menu:home")]],
+        )
+        return
+
+    if data == "direct_msg_report":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('messages'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        from handlers.report import show_count_step
+        await show_count_step(
+            event,
+            data_state,
+            send=False,
+            state="report_count",
+            max_count=MAX_REPORTS_PER_ACCOUNT,
+            title="Step 3/6 - Reports Per Account",
+            prefix=f"Message link selected: `{data_state['messages'][0]}`\n\n",
+        )
+        return
+
+    if data == "target_options":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await show_report_start(event, edit=True)
+            return
+        await show_target_type(event, data_state, send=False)
         return
 
     # ------------------------------------------------------------------
@@ -345,7 +508,10 @@ async def _route_callback(event, user_id: int, data: str):
 
     elif data == "peer_comment_yes":
         state, data_state = db.get_user_state(user_id)
-        db.set_user_state(user_id, "report_peer_comment", data_state)
+        if (data_state or {}).get('target_type') == 'pfp':
+            db.set_user_state(user_id, "report_pfp_comment", data_state)
+        else:
+            db.set_user_state(user_id, "report_peer_comment", data_state)
         await event.edit(
             "**Comment**\n\nSend the comment or explanation:",
             buttons=[[Button.inline("Main Menu", b"menu:home")]],
@@ -354,7 +520,10 @@ async def _route_callback(event, user_id: int, data: str):
     elif data == "peer_comment_no":
         state, data_state = db.get_user_state(user_id)
         data_state['comment'] = ""
-        await show_peer_reason_step(event, data_state, send=False, state="report_peer_reason")
+        if (data_state or {}).get('target_type') == 'pfp':
+            await show_peer_reason_step(event, data_state, send=False, state="report_pfp_reason")
+        else:
+            await show_peer_reason_step(event, data_state, send=False, state="report_peer_reason")
 
     # ------------------------------------------------------------------
     # Report reasons
@@ -518,7 +687,10 @@ async def _route_callback(event, user_id: int, data: str):
         data_state['reason'] = reason
         data_state['reason_detail'] = ""
         db.set_user_state(user_id, state, data_state)
-        await start_peer_report_session(event, reason)
+        if (data_state or {}).get('target_type') == 'pfp' or state == "report_pfp_reason":
+            await confirm_pfp_report(event, reason)
+        else:
+            await start_peer_report_session(event, reason)
 
     # ------------------------------------------------------------------
     # User / bot peer type
@@ -538,6 +710,9 @@ async def _route_callback(event, user_id: int, data: str):
     # ------------------------------------------------------------------
     elif data == "confirm_yes":
         await start_report_session(event)
+
+    elif data == "confirm_pfp_yes":
+        await start_pfp_report_session(event)
 
     elif data == "peer_retry":
         state, data_state = db.get_user_state(user_id)
@@ -580,7 +755,7 @@ async def _route_callback(event, user_id: int, data: str):
 
     elif data == "list_users":
         db.clear_user_state(user_id)
-        await list_users_command(event)
+        await show_users_menu(event, edit=True)
 
     elif data == "broadcast_prompt":
         db.clear_user_state(user_id)
@@ -658,6 +833,15 @@ async def _handle_count_pick(event, user_id: int, data: str):
             )
         return
 
+    if state == "report_pfp_count":
+        if not 1 <= count <= MAX_REPORTS_PER_ACCOUNT:
+            await event.answer(f"Choose 1-{MAX_REPORTS_PER_ACCOUNT}.", alert=True)
+            return
+        data_state['reports_per_account'] = count
+        db.set_user_state(user_id, "report_pfp_delay", data_state)
+        await show_delay_step(event, data_state, send=False)
+        return
+
     await event.edit("Session expired. Start again from the menu.")
 
 
@@ -669,7 +853,9 @@ async def _show_custom_input_prompt(event, user_id: int):
         "report_count": f"Send reports per account (1-{MAX_REPORTS_PER_ACCOUNT}):",
         "report_peer_count": f"Send reports per account (1-{MAX_REPORTS_PER_ACCOUNT}):",
         "report_user_count": f"Send reports per account (1-{MAX_REPORTS_PER_ACCOUNT}):",
+        "report_pfp_count": f"Send reports per account (1-{MAX_REPORTS_PER_ACCOUNT}):",
         "report_delay": f"Send the delay in seconds ({MIN_DELAY}-{MAX_DELAY}):",
+        "report_pfp_delay": f"Send the delay in seconds ({MIN_DELAY}-{MAX_DELAY}):",
     }
     text = prompts.get(state)
     if not text:
@@ -992,6 +1178,131 @@ async def start_peer_report_session(event, reason: str):
         buttons=[
             [Button.inline("New Report", b"menu:report"),
              Button.inline("Stats", b"menu:stats")],
+            [Button.inline("Main Menu", b"menu:home")],
+        ],
+    )
+
+
+async def confirm_pfp_report(event, reason: str):
+    """Show confirmation before starting a profile media report."""
+    user_id = event.sender_id
+    state, data = db.get_user_state(user_id)
+    if not state or not data:
+        await event.edit("Session expired! Start again from the menu.")
+        return
+
+    data['reason'] = reason
+    db.set_user_state(user_id, "confirming_pfp", data)
+
+    active_accounts = db.get_active_accounts()
+    total_accounts = len(active_accounts)
+
+    if total_accounts == 0:
+        await event.edit(
+            "No active accounts available.\n\nLog in or import a session first.",
+            buttons=[[Button.inline("Login", b"menu:login"), Button.inline("Main Menu", b"menu:home")]],
+        )
+        return
+
+    mode = data.get('pfp_mode', 'single')
+    if mode == 'single':
+        mode_str = "Single Picture (Latest)"
+    elif mode == 'all':
+        mode_str = "All Images & Videos"
+    else:
+        mode_str = f"Custom Photo #{data.get('pfp_indices', [1])}"
+
+    reason_text = reason_display(reason)
+    confirm_text = (
+        f"**Profile Media Report Summary**\n\n"
+        f"Target: `{data['target']}`\n"
+        f"Selection: {mode_str}\n"
+        f"Reports per account: {data.get('reports_per_account', 1)}\n"
+        f"Execution mode: {data.get('exec_mode', 'safe').capitalize()}\n"
+        f"Delay: {data.get('delay', 0)}s\n"
+        f"Comment: {data.get('comment') or 'None'}\n"
+        f"Reason: {reason_text}\n"
+        f"Active accounts: {total_accounts}\n\n"
+        f"Start this profile media report session?"
+    )
+    buttons = [
+        [Button.inline("Start Reporting", b"confirm_pfp_yes")],
+        [Button.inline("Cancel", b"confirm_no")],
+    ]
+    try:
+        await event.edit(confirm_text, buttons=buttons)
+    except Exception:
+        await event.respond(confirm_text, buttons=buttons)
+
+
+async def start_pfp_report_session(event):
+    """Start profile photo/video reporting session."""
+    user_id = event.sender_id
+    state, data = db.get_user_state(user_id)
+    if not state or not data or not data.get('target'):
+        await event.edit("Session expired! Start again with the menu.")
+        return
+    if user_id in active_reports:
+        await event.edit(
+            "A report is already running.",
+            buttons=[[Button.inline("Stop Report", b"stop_report")], [Button.inline("Main Menu", b"menu:home")]],
+        )
+        return
+
+    target = data['target']
+    pfp_mode = data.get('pfp_mode', 'single')
+    pfp_indices = data.get('pfp_indices', [1])
+    reports_per_account = data.get('reports_per_account', 1)
+    delay = data.get('delay', 5)
+    reason = data.get('reason', 'spam')
+    comment = data.get('comment', '')
+
+    progress_message = await event.edit(f"Starting profile media report on `{target}`...")
+
+    engine = ReportEngine(user_id)
+    active_reports[user_id] = {
+        'engine': engine,
+        'started_at': datetime.now(),
+    }
+    db.clear_user_state(user_id)
+
+    try:
+        exec_mode = data.get('exec_mode', 'safe')
+        if exec_mode == 'turbo':
+            await engine.run_parallel_profile_photo_report_session(
+                target=target,
+                pfp_mode=pfp_mode,
+                pfp_indices=pfp_indices,
+                reports_per_account=reports_per_account,
+                reason=reason,
+                comment=comment,
+                progress_message=progress_message,
+            )
+        else:
+            await engine.run_profile_photo_report_session(
+                target=target,
+                pfp_mode=pfp_mode,
+                pfp_indices=pfp_indices,
+                reports_per_account=reports_per_account,
+                delay=delay,
+                reason=reason,
+                comment=comment,
+                progress_message=progress_message,
+            )
+    except Exception as exc:
+        error = redact_sensitive(exc, 300)
+        log_activity(f"PFP report session error: {error}")
+        try:
+            await progress_message.edit(f"Report error: {error}", buttons=[[Button.inline("Main Menu", b"menu:home")]])
+        except Exception:
+            pass
+    finally:
+        active_reports.pop(user_id, None)
+
+    await event.respond(
+        "Profile media report session finished.\n\nWhat would you like to do next?",
+        buttons=[
+            [Button.inline("New Report", b"menu:report"), Button.inline("Stats", b"menu:stats")],
             [Button.inline("Main Menu", b"menu:home")],
         ],
     )

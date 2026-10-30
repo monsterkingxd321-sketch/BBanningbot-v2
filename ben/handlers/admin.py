@@ -234,40 +234,97 @@ async def revoke_command(event):
         await event.respond("Usage: /revoke [user_id]")
 
 
-@bot.on(events.NewMessage(pattern='/list_users'))
-async def list_users_command(event):
-    """Handle /list_users command."""
+async def show_users_menu(event, edit: bool = False):
+    """Show the interactive Approved Users & Access Control menu."""
     user_id = event.sender_id
-
     if not db.is_admin(user_id):
-        await event.respond("Admin only command.")
+        text = "Admin access required."
+        if edit:
+            await event.edit(text)
+        else:
+            await event.respond(text)
         return
 
     admins = db.get_all_admins()
     users = db.get_all_approved_users()
 
-    text = "**Admins:**\n"
+    text = "**User Access Management**\n\n"
+    text += f"**Admins ({len(admins)}):**\n"
     for admin in admins:
-        text += f"- {admin[0]} (@{admin[1]}) {'[Default]'if admin[4] else ''}\n"
+        text += f"- `{admin[0]}` (@{admin[1]}) {'[Default]' if admin[4] else ''}\n"
 
-    text += "\n**Approved Users:**\n"
-    for user in users:
-        text += f"- {user[0]} (@{user[1]}) - Approved by {user[2]}\n"
-
-    if len(text) > 4000:
-        parts = [text[i:i + 4000] for i in range(0, len(text), 4000)]
-        for part in parts:
-            await event.respond(part, parse_mode="markdown")
-        await event.respond(
-            "Use the buttons below to continue.",
-            buttons=[[Button.inline("Main Menu", b"menu:home")]],
-        )
+    text += f"\n**Approved Users ({len(users)}):**\n"
+    if users:
+        for u in users:
+            text += f"- `{u[0]}` (@{u[1]}) - by {u[2]}\n"
     else:
-        await event.respond(
-            text,
-            parse_mode="markdown",
-            buttons=[[Button.inline("Main Menu", b"menu:home")]],
-        )
+        text += "_No approved users yet._\n"
+
+    buttons = [
+        [Button.inline("➕ Approve User", b"users:add"),
+         Button.inline("➖ Revoke User", b"users:revoke_menu")],
+        [Button.inline("Refresh", b"menu:users"),
+         Button.inline("Main Menu", b"menu:home")],
+    ]
+
+    if edit:
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+    else:
+        await event.respond(text, buttons=buttons)
+
+
+async def show_revoke_users_menu(event, edit: bool = False):
+    """Show list of approved users to revoke with tap-to-revoke buttons."""
+    user_id = event.sender_id
+    if not db.is_admin(user_id):
+        return
+
+    users = db.get_all_approved_users()
+    if not users:
+        text = "**Revoke User Access**\n\nNo approved users to revoke."
+        buttons = [
+            [Button.inline("➕ Approve User", b"users:add")],
+            [Button.inline("Back to Users", b"menu:users"), Button.inline("Main Menu", b"menu:home")],
+        ]
+        if edit:
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                await event.respond(text, buttons=buttons)
+        else:
+            await event.respond(text, buttons=buttons)
+        return
+
+    text = (
+        "**Revoke User Access**\n\n"
+        "Tap a user below to revoke their bot access immediately,\n"
+        "or enter their User ID manually:"
+    )
+    buttons = []
+    for u in users:
+        target_uid = u[0]
+        uname = u[1] if u[1] and u[1] != "Unknown" else str(target_uid)
+        buttons.append([Button.inline(f"❌ Revoke {uname}", f"users:revoke_id:{target_uid}".encode())])
+
+    buttons.append([Button.inline("⌨️ Enter User ID Manually", b"users:revoke_manual")])
+    buttons.append([Button.inline("Back to Users", b"menu:users"), Button.inline("Main Menu", b"menu:home")])
+
+    if edit:
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+    else:
+        await event.respond(text, buttons=buttons)
+
+
+@bot.on(events.NewMessage(pattern='/list_users'))
+async def list_users_command(event):
+    """Handle /list_users command."""
+    await show_users_menu(event, edit=False)
 
 
 @bot.on(events.NewMessage(pattern='/broadcast'))

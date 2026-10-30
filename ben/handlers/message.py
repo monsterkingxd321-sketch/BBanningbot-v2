@@ -1,3 +1,4 @@
+import re
 import asyncio
 from telethon import events, Button
 from bot import bot, db, active_operations
@@ -134,6 +135,20 @@ async def handle_messages(event):
         await handle_report_user_count(event, data)
     elif state == "report_user_comment":
         await handle_report_user_comment(event, data)
+    elif state == "report_user_pfp_target":
+        await handle_report_user_pfp_target(event, data)
+    elif state == "report_pfp_custom":
+        await handle_report_pfp_custom(event, data)
+    elif state == "report_pfp_count":
+        await handle_report_pfp_count(event, data)
+    elif state == "report_pfp_delay":
+        await handle_report_pfp_delay(event, data)
+    elif state == "report_pfp_comment":
+        await handle_report_pfp_comment(event, data)
+    elif state == "users_add_id":
+        await handle_users_add_id(event, data)
+    elif state == "users_revoke_id":
+        await handle_users_revoke_id(event, data)
     elif state == "upload_proxies":
         await handle_upload_proxies(event, data)
     elif state == "review_channel":
@@ -254,8 +269,27 @@ async def handle_report_target(event, data: dict):
     """Handle report target input."""
     target = (event.text or "").strip()
     if not target:
-        await event.respond("The target is empty. Send a channel username or link.")
+        await event.respond("The target is empty. Send a channel/group username or link.")
         return
+
+    clean_target = target.split("?")[0].split("#")[0].strip()
+    is_msg_link = ("/c/" in clean_target or bool(re.search(r"t\.me/[^/]+/\d+", clean_target)))
+    if is_msg_link:
+        data['target'] = target
+        data['messages'] = [target]
+        await event.respond(
+            f"**Message Link Detected**\n\n"
+            f"Target message: `{target}`\n\n"
+            f"Do you want to report this message directly, or configure options?",
+            buttons=[
+                [Button.inline("⚡ Report This Message Directly", b"direct_msg_report")],
+                [Button.inline("⚙️ Choose Target Options", b"target_options")],
+                [Button.inline("Main Menu", b"menu:home")],
+            ],
+        )
+        db.set_user_state(event.sender_id, "report_target", data)
+        return
+
     data['target'] = target
     await show_target_type(event, data, send=True)
 
@@ -269,20 +303,47 @@ async def handle_report_scrape_count(event, data: dict):
     await run_scrape_flow(event, data, limit, edit=False)
 
 async def handle_report_messages(event, data: dict):
-    """Handle message links input manually."""
-    links = (event.text or "").strip().split('\n')
-
+    """Handle message links or custom message numbers input manually."""
+    raw_text = (event.text or "").strip()
+    lines = raw_text.replace(",", "\n").split("\n")
     valid_links = []
-    for link in links:
-        link = link.strip()
-        if link.startswith("https://t.me/") or link.startswith("t.me/"):
-            if link.startswith("t.me/"):
-                link = "https://" + link
-            valid_links.append(link)
+    target = data.get('target', '').strip()
+    clean_target = target.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("@", "").split("/")[0].split("?")[0]
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("https://t.me/") or line.startswith("t.me/") or line.startswith("tg://"):
+            if line.startswith("t.me/"):
+                line = "https://" + line
+            valid_links.append(line)
+        elif "-" in line and clean_target:
+            sub = line.split("-")
+            if len(sub) == 2 and sub[0].isdigit() and sub[1].isdigit():
+                start_m, end_m = int(sub[0]), int(sub[1])
+                for m_id in range(min(start_m, end_m), max(start_m, end_m) + 1):
+                    if target.startswith("-100") or "/c/" in target:
+                        c_id = target.replace("-100", "").replace("https://t.me/c/", "").split("/")[0]
+                        valid_links.append(f"https://t.me/c/{c_id}/{m_id}")
+                    else:
+                        valid_links.append(f"https://t.me/{clean_target}/{m_id}")
+        elif line.isdigit() and clean_target:
+            m_id = int(line)
+            if target.startswith("-100") or "/c/" in target:
+                c_id = target.replace("-100", "").replace("https://t.me/c/", "").split("/")[0]
+                valid_links.append(f"https://t.me/c/{c_id}/{m_id}")
+            else:
+                valid_links.append(f"https://t.me/{clean_target}/{m_id}")
 
     if not valid_links:
         await event.respond(
-            "No valid message links found! Example: `https://t.me/channel/123`",
+            "No valid message links or IDs found!\n\n"
+            "Examples:\n"
+            "- `https://t.me/channel/123`\n"
+            "- `https://t.me/c/1234567890/123`\n"
+            "- `120-125` (range of message IDs)\n"
+            "- `123, 125, 128` (specific message IDs)",
             buttons=[[Button.inline("Main Menu", b"menu:home")]],
         )
         return
@@ -295,7 +356,7 @@ async def handle_report_messages(event, data: dict):
         state="report_count",
         max_count=MAX_REPORTS_PER_ACCOUNT,
         title="Step 3/6 - Reports Per Account",
-        prefix=f" {len(valid_links)} message link(s) accepted.\n\n",
+        prefix=f"✅ {len(valid_links)} message link(s) accepted.\n\n",
     )
 
 async def handle_report_count(event, data: dict):
@@ -511,6 +572,121 @@ async def handle_upload_proxies(event, data: dict):
     )
     
     db.clear_user_state(user_id)
+
+async def handle_users_add_id(event, data: dict):
+    user_id = event.sender_id
+    text = (event.text or "").strip()
+    try:
+        target_id = int(text)
+    except ValueError:
+        await event.respond("Please enter a valid numeric Telegram User ID!\nExample: `1234567890`")
+        return
+    if db.approve_user(target_id, "Approved User", user_id):
+        db.clear_user_state(user_id)
+        await event.respond(
+            f"✅ **User Approved Successfully!**\n\n"
+            f"User ID: `{target_id}`\n"
+            f"This user can now access and use the bot.",
+            buttons=[
+                [Button.inline("➕ Approve Another", b"users:add"),
+                 Button.inline("Approved Users", b"menu:users")],
+                [Button.inline("Main Menu", b"menu:home")],
+            ],
+        )
+        log_activity(f"User {target_id} approved by admin {user_id}")
+    else:
+        await event.respond("Failed to approve user. Try again.")
+
+async def handle_users_revoke_id(event, data: dict):
+    user_id = event.sender_id
+    text = (event.text or "").strip()
+    try:
+        target_id = int(text)
+    except ValueError:
+        await event.respond("Please enter a valid numeric Telegram User ID!\nExample: `1234567890`")
+        return
+    if db.revoke_user(target_id):
+        db.clear_user_state(user_id)
+        await event.respond(
+            f"❌ **User Access Revoked!**\n\n"
+            f"User ID: `{target_id}` is no longer authorized to use this bot.",
+            buttons=[
+                [Button.inline("Approved Users", b"menu:users")],
+                [Button.inline("Main Menu", b"menu:home")],
+            ],
+        )
+        log_activity(f"User {target_id} revoked by admin {user_id}")
+    else:
+        await event.respond("Failed to revoke user. Try again.")
+
+async def handle_report_user_pfp_target(event, data: dict):
+    target = (event.text or "").strip()
+    if not target:
+        await event.respond("Please send a valid username or user ID!")
+        return
+    data['target'] = target
+    from handlers.report import show_pfp_mode_step
+    await show_pfp_mode_step(event, data, send=True)
+
+async def handle_report_pfp_custom(event, data: dict):
+    text = (event.text or "").strip()
+    indices = []
+    parts = text.replace(" ", "").split(",")
+    for part in parts:
+        if "-" in part:
+            sub = part.split("-")
+            if len(sub) == 2 and sub[0].isdigit() and sub[1].isdigit():
+                start_i, end_i = int(sub[0]), int(sub[1])
+                for idx in range(min(start_i, end_i), max(start_i, end_i) + 1):
+                    if idx > 0 and idx not in indices:
+                        indices.append(idx)
+        elif part.isdigit():
+            idx = int(part)
+            if idx > 0 and idx not in indices:
+                indices.append(idx)
+    if not indices:
+        await event.respond(
+            "Please send valid photo/video number(s)!\n"
+            "Examples:\n- `1` (Current/first profile picture)\n- `1, 2` (1st and 2nd)\n- `1-3` (first 3)",
+            buttons=[[Button.inline("Main Menu", b"menu:home")]],
+        )
+        return
+    data['pfp_indices'] = indices
+    data['pfp_mode'] = 'custom'
+    from handlers.report import show_pfp_count_step
+    await show_pfp_count_step(event, data, send=True)
+
+async def handle_report_pfp_count(event, data: dict):
+    try:
+        count = int((event.text or "").strip())
+    except ValueError:
+        await event.respond("Please enter a valid number!")
+        return
+    if count < 1 or count > MAX_REPORTS_PER_ACCOUNT:
+        await event.respond(f"Number must be between 1 and {MAX_REPORTS_PER_ACCOUNT}")
+        return
+    data['reports_per_account'] = count
+    db.set_user_state(event.sender_id, "report_pfp_delay", data)
+    from handlers.report import show_delay_step
+    await show_delay_step(event, data, send=True)
+
+async def handle_report_pfp_delay(event, data: dict):
+    try:
+        delay = int((event.text or "").strip())
+    except ValueError:
+        await event.respond("Please enter a valid number!")
+        return
+    if delay < MIN_DELAY or delay > MAX_DELAY:
+        await event.respond(f"Delay must be between {MIN_DELAY} and {MAX_DELAY} seconds")
+        return
+    data['delay'] = delay
+    from handlers.report import show_exec_mode_step
+    await show_exec_mode_step(event, data, send=True, peer=True)
+
+async def handle_report_pfp_comment(event, data: dict):
+    data['comment'] = (event.text or "").strip()
+    from handlers.report import show_peer_reason_step
+    await show_peer_reason_step(event, data, send=True, state="report_pfp_reason")
 
 @bot.on(events.NewMessage(pattern='/cancel'))
 async def cancel_command(event):

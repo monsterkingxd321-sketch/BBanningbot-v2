@@ -268,10 +268,11 @@ def _accounts_buttons(accounts: list, page: int):
     rows = []
     start = (page - 1) * REVIEW_PAGE_SIZE
     for account in accounts[start:start + REVIEW_PAGE_SIZE]:
-        toggle = "Disable"if account.get("enabled") else "Enable"
+        toggle = "Disable" if account.get("enabled") else "Enable"
         rows.append([
             _b(f"{toggle} #{account['id']}", f"rv:atoggle:{account['id']}"),
             _b(f"Check #{account['id']}", f"rv:acheck:{account['id']}"),
+            _b(f"🗑️ Del #{account['id']}", f"rv:adel:{account['id']}"),
         ])
     pages = max(1, (len(accounts) + REVIEW_PAGE_SIZE - 1) // REVIEW_PAGE_SIZE)
     nav = []
@@ -309,7 +310,23 @@ async def _toggle_account(event, user_id: int, account_id: int):
     new_state = not bool(account.get("enabled"))
     db.toggle_account_enabled(account_id, new_state)
     db.log_audit(user_id, "session_toggle", f"Account #{account_id} enabled={new_state}")
-    await event.answer("Enabled"if new_state else "Disabled")
+    await event.answer("Enabled" if new_state else "Disabled")
+    await _show_accounts(event, 1)
+
+
+async def _delete_account_review(event, user_id: int, account_id: int):
+    if not _require_admin(user_id):
+        await event.answer("Admin only.", alert=True)
+        return
+    account = db.get_account_by_id(account_id)
+    if not account:
+        await event.answer("Account not found.", alert=True)
+        return
+    phone = account.get("phone")
+    if phone:
+        db.remove_account(phone)
+        db.log_audit(user_id, "session_delete", f"Account #{account_id} ({phone}) deleted")
+        await event.answer(f"Account #{account_id} deleted.", alert=True)
     await _show_accounts(event, 1)
 
 
@@ -1461,10 +1478,12 @@ async def _route_callback(event, user_id: int, data: str):
     elif action == "accounts":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
         await _show_accounts(event, page)
-    elif action == "atoggle"and len(parts) > 2:
+    elif action == "atoggle" and len(parts) > 2:
         await _toggle_account(event, user_id, int(parts[2]))
-    elif action == "acheck"and len(parts) > 2:
+    elif action == "acheck" and len(parts) > 2:
         await _check_account(event, user_id, int(parts[2]))
+    elif action == "adel" and len(parts) > 2:
+        await _delete_account_review(event, user_id, int(parts[2]))
     elif action == "imp":
         if not _require_admin(user_id):
             await event.edit("Session imports are restricted to administrators.")

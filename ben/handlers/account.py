@@ -152,6 +152,8 @@ async def show_accounts_menu(event, send: bool = True):
          Button.inline("Login", b"menu:login")],
         [Button.inline("Start Reporting", b"menu:report")],
     ]
+    if accounts:
+        buttons.append([Button.inline("🗑️ Delete Account", b"account_delete_menu")])
     if db.is_admin(user_id):
         buttons.append([Button.inline("Manage Sessions", b"rv:accounts:1")])
         buttons.append([Button.inline("Import Sessions", b"rv:imp")])
@@ -166,7 +168,51 @@ async def show_accounts_menu(event, send: bool = True):
             await event.respond(text, buttons=buttons)
 
 
-@bot.on(events.NewMessage(pattern='/remove_account'))
+async def show_delete_accounts_menu(event, send: bool = False):
+    """Show list of accounts to delete with inline buttons."""
+    user_id = event.sender_id
+    if not is_user_authorized(user_id):
+        return
+
+    accounts = db.get_accounts()
+    if not accounts:
+        text = "**Delete Account**\n\nNo accounts are currently logged in."
+        buttons = [
+            [Button.inline("Login", b"menu:login")],
+            [Button.inline("Main Menu", b"menu:home")],
+        ]
+        if send:
+            await event.respond(text, buttons=buttons)
+        else:
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                await event.respond(text, buttons=buttons)
+        return
+
+    text = (
+        "**Delete Account**\n\n"
+        "Tap an account below to delete its session and remove it from the bot.\n"
+        "This completely deletes the session file and database entry."
+    )
+    rows = []
+    for acc in accounts:
+        phone = acc[1]
+        rows.append([Button.inline(f"🗑️ {phone}", f"del_acc:{phone}".encode())])
+
+    rows.append([Button.inline("⌨️ Enter Phone Manually", b"del_acc_custom")])
+    rows.append([Button.inline("Back to Accounts", b"menu:accounts"), Button.inline("Main Menu", b"menu:home")])
+
+    if send:
+        await event.respond(text, buttons=rows)
+    else:
+        try:
+            await event.edit(text, buttons=rows)
+        except Exception:
+            await event.respond(text, buttons=rows)
+
+
+@bot.on(events.NewMessage(pattern=r'/remove_account(?:\s+(.+))?'))
 async def remove_account_command(event):
     """Handle /remove_account command."""
     user_id = event.sender_id
@@ -175,10 +221,19 @@ async def remove_account_command(event):
         await event.respond("Access denied.")
         return
 
-    await event.respond(
-        "Which account do you want to remove?\n"
-        "Send the phone number:",
-        buttons=[[Button.inline("Main Menu", b"menu:home")]],
-    )
+    phone = event.pattern_match.group(1)
+    if phone:
+        phone = phone.strip()
+        if db.remove_account(phone):
+            await event.respond(
+                f"Account `{phone}` removed successfully!",
+                buttons=[[Button.inline("My Accounts", b"menu:accounts")], [Button.inline("Main Menu", b"menu:home")]],
+            )
+        else:
+            await event.respond(
+                f"Account `{phone}` not found.",
+                buttons=[[Button.inline("My Accounts", b"menu:accounts")]],
+            )
+        return
 
-    db.set_user_state(user_id, "remove_account", {"step": 1})
+    await show_delete_accounts_menu(event, send=True)
