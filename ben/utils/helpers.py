@@ -2,7 +2,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
-from telethon import TelegramClient, types, utils, errors as tg_errors
+from telethon import TelegramClient, types, utils, Button, errors as tg_errors
 from telethon.tl.functions.messages import ReportRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.account import ReportPeerRequest, UpdateStatusRequest, ReportProfilePhotoRequest
