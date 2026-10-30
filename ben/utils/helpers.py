@@ -23,11 +23,15 @@ def create_progress_bar(percentage: float, length: int = 10) -> str:
 
 def log_activity(message: str):
     """Log activities to file, redacting phone numbers and tokens."""
-    log_file = os.path.join(LOGS_FOLDER, f"bot_log_{datetime.now().strftime('%Y%m%d')}.txt")
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    safe_message = redact_sensitive(message, 1000)
-    with open(log_file, 'a', encoding='utf-8') as f:
-        f.write(f"[{timestamp}] {safe_message}\n")
+    try:
+        os.makedirs(LOGS_FOLDER, exist_ok=True)
+        log_file = os.path.join(LOGS_FOLDER, f"bot_log_{datetime.now().strftime('%Y%m%d')}.txt")
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        safe_message = redact_sensitive(message, 1000)
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {safe_message}\n")
+    except Exception:
+        pass
 
 def is_user_authorized(user_id: int) -> bool:
     """Check if user is authorized (admin or approved)"""
