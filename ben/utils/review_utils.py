@@ -306,6 +306,8 @@ def ensure_telethon_session(session_path: str) -> bool:
 
         tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
 
+        from telethon.sessions.sqlite import CURRENT_VERSION
+
         if 'sessions' in tables:
             cols = [r[1] for r in cur.execute("PRAGMA table_info(sessions)").fetchall()]
             if 'server_address' not in cols and 'auth_key' in cols:
@@ -322,23 +324,26 @@ def ensure_telethon_session(session_path: str) -> bool:
                     }
                     ip = dc_map.get(dc_id, "149.154.167.51")
                     cur.execute("DROP TABLE sessions")
-                    cur.execute("CREATE TABLE sessions (dc_id integer primary key, server_address text, port integer, auth_key blob, takeout_id integer)")
-                    cur.execute("INSERT INTO sessions VALUES (?, ?, 443, ?, NULL)", (dc_id, ip, auth_key))
+                    cur.execute("CREATE TABLE sessions (dc_id integer primary key, server_address text, port integer, auth_key blob, takeout_id integer, tmp_auth_key blob)")
+                    cur.execute("INSERT INTO sessions VALUES (?, ?, 443, ?, NULL, NULL)", (dc_id, ip, auth_key))
+            else:
+                # Telethon session: ensure tmp_auth_key column exists
+                if 'tmp_auth_key' not in cols:
+                    cur.execute("ALTER TABLE sessions ADD COLUMN tmp_auth_key blob")
 
-        # Always ensure version table is compatible with Telethon (version integer column, value 7)
+        # Always ensure version table is compatible with Telethon CURRENT_VERSION (version 8)
         if 'version' in tables:
             v_cols = [r[1] for r in cur.execute("PRAGMA table_info(version)").fetchall()]
             if 'version' not in v_cols:
                 cur.execute("DROP TABLE version")
                 cur.execute("CREATE TABLE version (version integer primary key)")
-                cur.execute("INSERT INTO version VALUES (7)")
+                cur.execute("INSERT INTO version VALUES (?)", (CURRENT_VERSION,))
             else:
-                row = cur.execute("SELECT version FROM version").fetchone()
-                if not row:
-                    cur.execute("INSERT INTO version VALUES (7)")
+                cur.execute("DELETE FROM version")
+                cur.execute("INSERT INTO version VALUES (?)", (CURRENT_VERSION,))
         else:
             cur.execute("CREATE TABLE version (version integer primary key)")
-            cur.execute("INSERT INTO version VALUES (7)")
+            cur.execute("INSERT INTO version VALUES (?)", (CURRENT_VERSION,))
 
         cur.execute("CREATE TABLE IF NOT EXISTS entities (id integer primary key, hash integer not null, username text, phone integer, name text, date integer)")
         cur.execute("CREATE TABLE IF NOT EXISTS sent_files (md5_digest blob, file_size integer, type integer, id integer, hash integer, primary key(md5_digest, file_size, type))")
