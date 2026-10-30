@@ -48,10 +48,23 @@ async def handle_messages(event):
             phone = active_operations[user_id].get('phone')
             if client and phone:
                 try:
-                    await client.send_code_request(phone, force_sms=True)
-                    await event.respond(f"🔄 **OTP resent successfully for {phone}!**\nPlease send the code as a message here.")
+                    sent_code = None
+                    try:
+                        sent_code = await client.send_code_request(phone, force_sms=True)
+                    except Exception:
+                        if hasattr(client, '_phone_code_hash'):
+                            client._phone_code_hash.pop(phone, None)
+                            client._phone_code_hash.pop(phone.replace('+', ''), None)
+                        sent_code = await client.send_code_request(phone, force_sms=False)
+                    new_hash = getattr(sent_code, 'phone_code_hash', None)
+                    if new_hash and 'data' in active_operations[user_id]:
+                        active_operations[user_id]['data']['phone_code_hash'] = new_hash
+                    await event.respond(
+                        f"🔄 **OTP resent successfully for {mask_phone(phone)}!**\n"
+                        f"Check Telegram or SMS on your phone and send the code here."
+                    )
                 except Exception as e:
-                    await event.respond(f"Failed to resend OTP: {e}")
+                    await event.respond(f"Failed to resend OTP: {redact_sensitive(e, 80)}")
                 return
         if text.startswith('/'):
             await event.respond(
@@ -62,8 +75,9 @@ async def handle_messages(event):
             return
         state_data = active_operations[user_id]['data']
         # If we expect OTP
-        if 'otp'not in state_data and not state_data.get('awaiting_password'):
-            state_data['otp'] = text
+        if 'otp' not in state_data and not state_data.get('awaiting_password'):
+            digits = re.sub(r'\D', '', text)
+            state_data['otp'] = digits if len(digits) in (5, 6) else text.strip()
             active_operations[user_id]['event'].set()
             return
         # If we expect Password

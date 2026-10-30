@@ -184,6 +184,34 @@ class ReviewUtilityTests(unittest.TestCase):
                 self.assertIsInstance(button.type.data, bytes)
                 self.assertLessEqual(len(button.type.data), 64)
 
+    def test_ensure_telethon_session_multi_column(self):
+        from utils.review_utils import ensure_telethon_session
+        from telethon.sessions import SQLiteSession
+
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as tf:
+            session_file = tf.name
+
+        try:
+            conn = sqlite3.connect(session_file)
+            c = conn.cursor()
+            # 7-column schema like Pyrogram / Bitz Session Manager
+            c.execute("CREATE TABLE sessions (dc_id integer, api_id integer, test_mode integer, auth_key blob, date integer, user_id integer, is_bot integer)")
+            c.execute("INSERT INTO sessions VALUES (2, 99999, 0, ?, 1234567, 11111, 0)", (b"k" * 256,))
+            conn.commit()
+            conn.close()
+
+            self.assertTrue(ensure_telethon_session(session_file))
+
+            # Must load cleanly in Telethon SQLiteSession without "too many values to unpack (expected 6)"
+            base_name = session_file[:-8] if session_file.endswith(".session") else session_file
+            sq = SQLiteSession(base_name)
+            self.assertEqual(sq.dc_id, 2)
+            self.assertEqual(len(sq.auth_key.key), 256)
+            sq.close()
+        finally:
+            if os.path.exists(session_file):
+                os.unlink(session_file)
+
 
 class ReviewDatabaseTests(unittest.TestCase):
     def setUp(self):

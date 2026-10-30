@@ -309,27 +309,54 @@ def ensure_telethon_session(session_path: str) -> bool:
         from telethon.sessions.sqlite import CURRENT_VERSION
 
         if 'sessions' in tables:
-            cols = [r[1] for r in cur.execute("PRAGMA table_info(sessions)").fetchall()]
-            if 'server_address' not in cols and 'auth_key' in cols:
-                # Convert Pyrogram SQLite session to Telethon SQLite format
-                row = cur.execute("SELECT dc_id, auth_key FROM sessions").fetchone()
-                if row and row[1]:
-                    dc_id, auth_key = row[0], row[1]
-                    dc_map = {
-                        1: "149.154.175.53",
-                        2: "149.154.167.51",
-                        3: "149.154.175.100",
-                        4: "149.154.167.91",
-                        5: "91.108.56.130",
-                    }
-                    ip = dc_map.get(dc_id, "149.154.167.51")
-                    cur.execute("DROP TABLE sessions")
-                    cur.execute("CREATE TABLE sessions (dc_id integer primary key, server_address text, port integer, auth_key blob, takeout_id integer, tmp_auth_key blob)")
-                    cur.execute("INSERT INTO sessions VALUES (?, ?, 443, ?, NULL, NULL)", (dc_id, ip, auth_key))
-            else:
-                # Telethon session: ensure tmp_auth_key column exists
-                if 'tmp_auth_key' not in cols:
-                    cur.execute("ALTER TABLE sessions ADD COLUMN tmp_auth_key blob")
+            col_info = cur.execute("PRAGMA table_info(sessions)").fetchall()
+            cols = [r[1] for r in col_info]
+            expected_cols = ['dc_id', 'server_address', 'port', 'auth_key', 'takeout_id', 'tmp_auth_key']
+            if cols != expected_cols:
+                # Ensure the sessions table strictly conforms to Telethon's 6 columns
+                rows = cur.execute("SELECT * FROM sessions").fetchall()
+                col_indices = {name: i for i, name in enumerate(cols)}
+                dc_map = {
+                    1: "149.154.175.53",
+                    2: "149.154.167.51",
+                    3: "149.154.175.100",
+                    4: "149.154.167.91",
+                    5: "91.108.56.130",
+                }
+                normalized_rows = []
+                for r in rows:
+                    dc_id = r[col_indices['dc_id']] if 'dc_id' in col_indices else 2
+                    if not dc_id:
+                        dc_id = 2
+                    auth_key = r[col_indices['auth_key']] if 'auth_key' in col_indices else None
+                    if not auth_key:
+                        continue
+                    server_address = None
+                    if 'server_address' in col_indices:
+                        server_address = r[col_indices['server_address']]
+                    if not server_address or not isinstance(server_address, str) or not server_address.strip():
+                        server_address = dc_map.get(dc_id, "149.154.167.51")
+                    port = 443
+                    if 'port' in col_indices and r[col_indices['port']]:
+                        try:
+                            port = int(r[col_indices['port']])
+                        except (ValueError, TypeError):
+                            port = 443
+                    takeout_id = r[col_indices['takeout_id']] if 'takeout_id' in col_indices else None
+                    tmp_auth_key = r[col_indices['tmp_auth_key']] if 'tmp_auth_key' in col_indices else None
+                    normalized_rows.append((dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key))
+
+                cur.execute("DROP TABLE sessions")
+                cur.execute("""CREATE TABLE sessions (
+                    dc_id integer primary key,
+                    server_address text,
+                    port integer,
+                    auth_key blob,
+                    takeout_id integer,
+                    tmp_auth_key blob
+                )""")
+                for nr in normalized_rows:
+                    cur.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?)", nr)
 
         # Always ensure version table is compatible with Telethon CURRENT_VERSION (version 8)
         if 'version' in tables:

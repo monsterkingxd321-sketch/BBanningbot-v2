@@ -68,17 +68,17 @@ async def handle_callbacks(event):
         return
 
     try:
-        await event.answer()
-    except Exception:
-        pass
-
-    try:
         await _route_callback(event, user_id, data)
     except Exception as exc:
         error = redact_sensitive(exc, 300)
         log_activity(f"Callback error for user {user_id} ({data[:80]}): {error}")
         try:
             await event.answer("Something went wrong. Please use /start.", alert=True)
+        except Exception:
+            pass
+    finally:
+        try:
+            await event.answer()
         except Exception:
             pass
 
@@ -232,16 +232,31 @@ async def _route_callback(event, user_id: int, data: str):
     if data == "login_resend_otp":
         op = active_operations.get(user_id)
         if op and op.get('client') and op.get('phone'):
+            client = op['client']
+            phone = op['phone']
             try:
-                await op['client'].send_code_request(op['phone'], force_sms=True)
-                await event.answer("🔄 OTP has been resent!", alert=True)
+                sent_code = None
+                try:
+                    sent_code = await client.send_code_request(phone, force_sms=True)
+                except Exception:
+                    if hasattr(client, '_phone_code_hash'):
+                        client._phone_code_hash.pop(phone, None)
+                        client._phone_code_hash.pop(phone.replace('+', ''), None)
+                    sent_code = await client.send_code_request(phone, force_sms=False)
+
+                new_hash = getattr(sent_code, "phone_code_hash", None)
+                if new_hash and 'data' in op:
+                    op['data']['phone_code_hash'] = new_hash
+
+                await event.answer("🔄 A new OTP has been sent via Telegram / SMS!", alert=True)
                 pm = op.get('progress_message')
                 if pm:
                     try:
                         await pm.edit(
-                            f"**Telegram Login: {mask_phone(op['phone'])}**\n\n"
-                            f"🔄 **OTP has been resent!** (Checked SMS/Telegram)\n"
-                            f"Please send the verification code as a text message.",
+                            f"**Telegram Login: {mask_phone(phone)}**\n\n"
+                            f"🔄 **A new OTP has been sent!**\n"
+                            f"Check Telegram or SMS on your phone.\n\n"
+                            f"Please send the verification code as a text message here.",
                             buttons=[
                                 [Button.inline("🔄 Resend OTP", b"login_resend_otp"),
                                  Button.inline("❌ Cancel Login", b"ui_cancel")]
@@ -250,7 +265,7 @@ async def _route_callback(event, user_id: int, data: str):
                     except Exception:
                         pass
             except Exception as e:
-                await event.answer(f"Failed to resend: {e}", alert=True)
+                await event.answer(f"Failed to resend: {redact_sensitive(e, 80)}", alert=True)
         else:
             await event.answer("No active login operation found.", alert=True)
         return

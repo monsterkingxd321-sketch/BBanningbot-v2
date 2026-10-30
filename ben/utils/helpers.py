@@ -385,7 +385,7 @@ class SessionManager:
                 phone_code_hash = getattr(sent_code, "phone_code_hash", None)
 
                 login_buttons = [
-                    [Button.inline("🔄 Resend OTP (SMS)", b"login_resend_otp"),
+                    [Button.inline("🔄 Resend OTP", b"login_resend_otp"),
                      Button.inline("❌ Cancel Login", b"ui_cancel")],
                 ]
                 await progress_message.edit(
@@ -419,12 +419,16 @@ class SessionManager:
                     if op_data.get('cancelled'):
                         raise ValueError("Login cancelled by user.")
                     
-                    otp = (op_data.get('otp') or '').strip()
-                    if not otp:
+                    raw_otp = (op_data.get('otp') or '').strip()
+                    if not raw_otp:
                         raise ValueError("No verification code received.")
                     
+                    digits = re.sub(r'\D', '', raw_otp)
+                    otp = digits if len(digits) in (5, 6) else raw_otp
+                    phone_code_hash = op_data.get('phone_code_hash')
+                    
                     try:
-                        await client.sign_in(phone, code=otp)
+                        await client.sign_in(phone, code=otp, phone_code_hash=phone_code_hash)
                         break
                     except PhoneCodeInvalidError:
                         event.clear()
@@ -439,7 +443,17 @@ class SessionManager:
                     except PhoneCodeExpiredError:
                         event.clear()
                         op_data.pop('otp', None)
-                        await client.send_code_request(phone)
+                        sent_code = None
+                        try:
+                            sent_code = await client.send_code_request(phone, force_sms=True)
+                        except Exception:
+                            if hasattr(client, '_phone_code_hash'):
+                                client._phone_code_hash.pop(phone, None)
+                                client._phone_code_hash.pop(phone.replace('+', ''), None)
+                            sent_code = await client.send_code_request(phone, force_sms=False)
+                        new_hash = getattr(sent_code, 'phone_code_hash', None)
+                        if new_hash:
+                            op_data['phone_code_hash'] = new_hash
                         await progress_message.edit(
                             f"**Telegram Login: {mask_phone(phone)}**\n\n"
                             f"⚠️ **Code expired! A new OTP was sent.**\n\n"
