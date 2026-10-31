@@ -577,5 +577,25 @@ class TargetAndReasonTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(peer_reason_buttons("pfp")) > 0)
         self.assertTrue(len(peer_reason_buttons("user")) > 0)
 
+    def test_campaign_target_types_and_reasons(self):
+        from handlers.campaign import TARGET_TYPE_LABELS, TARGET_CATEGORIES
+        from handlers.report_ui import reason_key_from_label
+
+        self.assertEqual(TARGET_TYPE_LABELS["channel_peer"], "Entire Channel (3-Dots)")
+        self.assertEqual(TARGET_TYPE_LABELS["group_peer"], "Entire Group (3-Dots)")
+        self.assertEqual(TARGET_TYPE_LABELS["account_pfp"], "User Profile Photo (PFP)")
+        self.assertEqual(TARGET_TYPE_LABELS["bot_pfp"], "Bot Profile Photo (PFP)")
+
+        # Verify reason_key_from_label handles emoji labels
+        self.assertEqual(reason_key_from_label("🔞 Pornography"), "pornography")
+        self.assertEqual(reason_key_from_label("⚠️ Child Abuse"), "child_abuse")
+        self.assertEqual(reason_key_from_label("🩸 Violence"), "violence")
+        self.assertEqual(reason_key_from_label("🪪 Personal Details"), "personal_details")
+        self.assertEqual(reason_key_from_label("©️ Copyright"), "copyright")
+        self.assertEqual(reason_key_from_label("📝 Other"), "other")
+        self.assertEqual(reason_key_from_label("🎭 Fake Channel"), "fake")
+        self.assertEqual(reason_key_from_label("📢 Spam"), "spam")
+        self.assertEqual(reason_key_from_label("📍 Geo Irrelevant"), "geo_irrelevant")
+
 if __name__ == "__main__":
     unittest.main()

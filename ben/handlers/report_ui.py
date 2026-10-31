@@ -106,31 +106,42 @@ REASON_KEYS_BY_LABEL = {
 
 def reason_key_from_label(label: str, fallback: str = "other") -> str:
     """Map an official Telegram reason label to its local reason key."""
-    value = (label or "").strip().lower()
-    if value in REASON_KEYS_BY_LABEL:
-        return REASON_KEYS_BY_LABEL[value]
+    import re
+    raw = (label or "").strip().lower()
+    if raw in REASON_KEYS_BY_LABEL:
+        return REASON_KEYS_BY_LABEL[raw]
+    clean = re.sub(r'[^\w\s]', ' ', raw).strip()
+    clean = re.sub(r'\s+', ' ', clean)
+    if clean in REASON_KEYS_BY_LABEL:
+        return REASON_KEYS_BY_LABEL[clean]
     aliases = {
         "fake account": "fake",
         "fake": "fake",
         "scam": "fake",
         "scam or fraud": "fake",
+        "fake scam": "fake",
+        "fake channel": "fake",
         "child abuse": "child_abuse",
         "violence": "violence",
         "illegal drugs": "illegal_drugs",
         "illegal goods and services": "illegal_drugs",
         "illegal adult content": "pornography",
+        "adult content": "pornography",
         "pornography": "pornography",
         "personal details": "personal_details",
         "personal data": "personal_details",
         "copyright": "copyright",
         "spam": "spam",
         "geo irrelevant": "geo_irrelevant",
+        "irrelevant geo": "geo_irrelevant",
         "irrelevant / geo": "geo_irrelevant",
+        "it s not illegal but must be taken down": "geo_irrelevant",
         "it's not illegal, but must be taken down": "geo_irrelevant",
         "i don't like it": "other",
+        "i don t like it": "other",
         "other": "other",
     }
-    return aliases.get(value, fallback)
+    return aliases.get(clean, aliases.get(raw, fallback))
 
 
 def reason_display(reason_key: str, detail: str = "") -> str:

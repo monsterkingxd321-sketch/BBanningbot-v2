@@ -160,13 +160,13 @@ TARGET_TYPE_LABELS = {
 
     "channel_msgs": "Channel Messages (Posts)",
 
-    "channel_peer": "Channel Profile",
+    "channel_peer": "Entire Channel (3-Dots)",
 
     "channel_pfp": "Channel Profile Photo (PFP)",
 
     "group_msgs": "Group Messages",
 
-    "group_peer": "Group Profile",
+    "group_peer": "Entire Group (3-Dots)",
 
     "group_pfp": "Group Profile Photo (PFP)",
 
@@ -180,7 +180,7 @@ TARGET_TYPE_LABELS = {
 
     "bot_pfp": "Bot Profile Photo (PFP)",
 
-    "bot_msgs": "Bot Messages / PM Post",
+    "bot_msgs": "Bot Messages / Direct PM",
 
     "bot_in_group": "Bot Message in Group",
 
@@ -706,11 +706,11 @@ async def show_target_type_prompt(event, data: dict):
 
         buttons = [
 
-            [Button.inline("Channel Messages (Posts)", b"cmp:ttype:channel_msgs")],
+            [Button.inline("📢 Entire Channel (3-Dots)", b"cmp:ttype:channel_peer")],
 
-            [Button.inline("Channel Profile", b"cmp:ttype:channel_peer")],
+            [Button.inline("💬 Channel Messages (Posts)", b"cmp:ttype:channel_msgs")],
 
-            [Button.inline("Channel Profile Photo (PFP)", b"cmp:ttype:channel_pfp")],
+            [Button.inline("🖼️ Channel Profile Photo (PFP)", b"cmp:ttype:channel_pfp")],
 
             [_btn_back("Back", b"cmp:back_tcat")],
 
@@ -720,15 +720,15 @@ async def show_target_type_prompt(event, data: dict):
 
         buttons = [
 
-            [Button.inline("Group Messages", b"cmp:ttype:group_msgs")],
+            [Button.inline("👥 Entire Group (3-Dots)", b"cmp:ttype:group_peer")],
 
-            [Button.inline("Group Profile", b"cmp:ttype:group_peer")],
+            [Button.inline("💬 Group Messages", b"cmp:ttype:group_msgs")],
 
-            [Button.inline("Group Profile Photo (PFP)", b"cmp:ttype:group_pfp")],
+            [Button.inline("🖼️ Group Profile Photo (PFP)", b"cmp:ttype:group_pfp")],
 
-            [Button.inline("User Message in Group", b"cmp:ttype:user_in_group")],
+            [Button.inline("💬 User Message in Group", b"cmp:ttype:user_in_group")],
 
-            [Button.inline("Bot Message in Group", b"cmp:ttype:bot_in_group")],
+            [Button.inline("🤖 Bot Message in Group", b"cmp:ttype:bot_in_group")],
 
             [_btn_back("Back", b"cmp:back_tcat")],
 
@@ -738,13 +738,11 @@ async def show_target_type_prompt(event, data: dict):
 
         buttons = [
 
-            [Button.inline("Bot Profile", b"cmp:ttype:bot_profile")],
+            [Button.inline("💬 Bot Messages / Direct PM", b"cmp:ttype:bot_msgs")],
 
-            [Button.inline("Bot Profile Photo (PFP)", b"cmp:ttype:bot_pfp")],
+            [Button.inline("🖼️ Bot Profile Photo (PFP)", b"cmp:ttype:bot_pfp")],
 
-            [Button.inline("Bot Messages / Direct PM", b"cmp:ttype:bot_msgs")],
-
-            [Button.inline("Bot Message in Group", b"cmp:ttype:bot_in_group")],
+            [Button.inline("🤖 Bot Message in Group", b"cmp:ttype:bot_in_group")],
 
             [_btn_back("Back", b"cmp:back_tcat")],
 
@@ -754,11 +752,9 @@ async def show_target_type_prompt(event, data: dict):
 
         buttons = [
 
-            [Button.inline("User Profile / Account", b"cmp:ttype:account_profile")],
+            [Button.inline("🖼️ User Profile Photo (PFP)", b"cmp:ttype:account_pfp")],
 
-            [Button.inline("User Profile Photo (PFP)", b"cmp:ttype:account_pfp")],
-
-            [Button.inline("User Message in Group", b"cmp:ttype:user_in_group")],
+            [Button.inline("💬 User Message in Group", b"cmp:ttype:user_in_group")],
 
             [_btn_back("Back", b"cmp:back_tcat")],
 
@@ -850,9 +846,9 @@ def _target_prompt_text(data: dict) -> str:
 
             f"**Campaign Setup: {step} - Target User**\n\nCampaign: {name}\nType: {label}\n\n"
 
-            "Send the user's username or link.\n"
+            "Send the user's username, User ID, or profile link.\n"
 
-            "Examples: `@username`, `https://t.me/username`"
+            "Examples: `@username`, `https://t.me/username`, or `1234567890`"
 
         )
 
@@ -862,9 +858,9 @@ def _target_prompt_text(data: dict) -> str:
 
             f"**Campaign Setup: {step} - Target Bot**\n\nCampaign: {name}\nType: {label}\n\n"
 
-            "Send the bot username or link.\n"
+            "Send the bot username, Bot ID, or link.\n"
 
-            "Examples: `@BotFather`, `https://t.me/example_bot`"
+            "Examples: `@BotFather`, `https://t.me/example_bot`, or `1234567890`"
 
         )
 
@@ -1432,17 +1428,35 @@ async def show_dist_prompt(event, data: dict):
 
 def _reason_prompt_text(data: dict) -> str:
 
+    ttype = data.get("target_type") or "channel_msgs"
+
+    if "pfp" in ttype:
+
+        target_name = "Profile Photo / Video"
+
+    elif ttype == "channel_peer":
+
+        target_name = "Entire Channel (3-Dots)"
+
+    elif ttype == "group_peer":
+
+        target_name = "Entire Group (3-Dots)"
+
+    elif ttype in ("account_profile", "bot_profile"):
+
+        target_name = "Profile"
+
+    else:
+
+        target_name = "Messages"
+
     return (
 
-        "**Campaign Setup: 8 of 11 - Main Reason**\n\n"
+        f"**Campaign Setup: Step 8 - Report Reasons ({target_name})**\n\n"
 
-        "These are the exact report reasons returned by Telegram for this "
+        f"These are the exact official Telegram report reasons available for this {target_name.lower()}.\n"
 
-        "target. If Telegram returns more options after a reason is chosen, "
-
-        "the next screen shows that exact list too.\n\n"
-
-        f"Selected distribution: {_dist_text(data.get('dist_mode'))}"
+        "Select one or more reasons below:"
 
     )
 
@@ -1778,7 +1792,7 @@ async def show_reason_choices(event, data: dict):
 
 async def show_reason_prompt(event, data: dict):
 
-    """Load the exact first page of report reasons from Telegram."""
+    """Load the exact report reasons from Telegram based on target type."""
 
     target = data.get("target") or ""
 
@@ -1792,7 +1806,7 @@ async def show_reason_prompt(event, data: dict):
 
         "account_profile", "account_pfp", "bot_profile", "bot_pfp"
 
-    )
+    ) or "peer" in ttype or "pfp" in ttype or "profile" in ttype
 
 
 
@@ -1810,91 +1824,213 @@ async def show_reason_prompt(event, data: dict):
 
 
 
-    phone = (data.get("selected_phones") or [None])[0]
+    # Check target type to serve the EXACT official Telegram reason set
 
-    # For peer targets use a dummy message link (just the target itself)
+    if "pfp" in ttype:
 
-    msg_link_for_query = messages[0] if messages else target
+        # 1. Profile Photo / Video (PFP) reasons
 
-    await _render(
+        options = [
 
-        event,
+            {"text": "🔞 Pornography", "option": ""},
 
-        "**Loading Telegram Report Reasons**\n\n"
+            {"text": "⚠️ Child Abuse", "option": ""},
 
-        "Asking Telegram for the exact reasons available for this target.",
+            {"text": "🩸 Violence", "option": ""},
 
-        buttons=[[_cancel_button()]],
+            {"text": "🪪 Personal Details", "option": ""},
 
-    )
+            {"text": "©️ Copyright", "option": ""},
 
-    result = await load_report_choices(phone, target, msg_link_for_query, option_bytes=b"")
+            {"text": "📝 Other", "option": ""},
 
+        ]
 
+        prompt_title = "**Telegram Profile Photo Report Reasons**"
 
-    if result.get("kind") == "choose" and result.get("options"):
+        prompt_desc = "Select one or more real Telegram profile photo report reasons below."
 
-        data["reason_pages"] = [result["options"]]
+    elif ttype == "channel_peer":
 
-        data["reason_page"] = 0
+        # 2. Channel 3-Dots reasons
 
-        data["reason"] = ""
+        options = [
 
-        data["reason_detail"] = ""
+            {"text": "📢 Spam", "option": ""},
 
-        data["reason_option"] = ""
+            {"text": "🎭 Fake Channel", "option": ""},
 
-        data["reason_pending_option"] = ""
+            {"text": "🩸 Violence", "option": ""},
 
-        data["comment_required"] = any(
+            {"text": "⚠️ Child Abuse", "option": ""},
 
-            bool(item.get("comment_required")) for item in _reason_choices(data)
+            {"text": "💊 Illegal Drugs", "option": ""},
+
+            {"text": "🔞 Adult Content", "option": ""},
+
+            {"text": "🪪 Personal Details", "option": ""},
+
+            {"text": "©️ Copyright", "option": ""},
+
+            {"text": "📍 Geo Irrelevant", "option": ""},
+
+            {"text": "📝 Other", "option": ""},
+
+        ]
+
+        prompt_title = "**Telegram Channel Report Reasons (3-Dots)**"
+
+        prompt_desc = "Select one or more real Telegram channel report reasons below."
+
+    elif ttype == "group_peer":
+
+        # 3. Group 3-Dots reasons
+
+        options = [
+
+            {"text": "📢 Spam", "option": ""},
+
+            {"text": "🎭 Fake / Scam", "option": ""},
+
+            {"text": "🩸 Violence", "option": ""},
+
+            {"text": "⚠️ Child Abuse", "option": ""},
+
+            {"text": "🔞 Pornography", "option": ""},
+
+            {"text": "💊 Illegal Drugs", "option": ""},
+
+            {"text": "🪪 Personal Details", "option": ""},
+
+            {"text": "📝 Other", "option": ""},
+
+        ]
+
+        prompt_title = "**Telegram Group Report Reasons (3-Dots)**"
+
+        prompt_desc = "Select one or more real Telegram group report reasons below."
+
+    elif ttype in ("account_profile", "bot_profile"):
+
+        # 4. User / Bot profile reasons
+
+        options = [
+
+            {"text": "🎭 Fake Account", "option": ""},
+
+            {"text": "📢 Spam", "option": ""},
+
+            {"text": "🩸 Violence", "option": ""},
+
+            {"text": "⚠️ Child Abuse", "option": ""},
+
+            {"text": "🔞 Pornography", "option": ""},
+
+            {"text": "💊 Illegal Drugs", "option": ""},
+
+            {"text": "🪪 Personal Details", "option": ""},
+
+            {"text": "📝 Other", "option": ""},
+
+        ]
+
+        prompt_title = "**Telegram Account Report Reasons**"
+
+        prompt_desc = "Select one or more real Telegram report reasons below."
+
+    else:
+
+        # 5. Message targets - Query Telegram server if available
+
+        phone = (data.get("selected_phones") or [None])[0]
+
+        msg_link_for_query = messages[0] if messages else target
+
+        await _render(
+
+            event,
+
+            "**Loading Telegram Report Reasons**\n\n"
+
+            "Asking Telegram for the exact reasons available for this target.",
+
+            buttons=[[_cancel_button()]],
 
         )
 
-        data["step"] = "reason"
-
-        _save_flow(event.sender_id, data)
-
-        buttons = report_option_buttons(result["options"], "cmp:ropt")
-
-        buttons.append([Button.inline("Explain All Options", b"cmp:options")])
-
-        buttons.append([Button.inline("Try Again", b"cmp:rretry"),
-
-                        _btn_back("Back", b"cmp:back_dist" if data.get("messages") else b"cmp:back_accounts")])
-
-        buttons.append([_cancel_button()])
-
-        await _render(event, _reason_prompt_text(data), buttons=buttons)
-
-        return
+        result = await load_report_choices(phone, target, msg_link_for_query, option_bytes=b"")
 
 
 
-    standard_options = [
+        if result.get("kind") == "choose" and result.get("options"):
 
-        {"text": "Spam", "option": "39"},
+            data["reason_pages"] = [result["options"]]
 
-        {"text": "Scam or fraud", "option": "37"},
+            data["reason_page"] = 0
 
-        {"text": "Violence", "option": "33"},
+            data["reason"] = ""
 
-        {"text": "Child abuse", "option": "32"},
+            data["reason_detail"] = ""
 
-        {"text": "Illegal goods and services", "option": "34"},
+            data["reason_option"] = ""
 
-        {"text": "Illegal adult content", "option": "35"},
+            data["reason_pending_option"] = ""
 
-        {"text": "Personal data", "option": "36"},
+            data["comment_required"] = any(
 
-        {"text": "Copyright", "option": "38"},
+                bool(item.get("comment_required")) for item in _reason_choices(data)
 
-        {"text": "Other", "option": "61"},
+            )
 
-    ]
+            data["step"] = "reason"
 
-    data["reason_pages"] = [standard_options]
+            _save_flow(event.sender_id, data)
+
+            buttons = report_option_buttons(result["options"], "cmp:ropt")
+
+            buttons.append([Button.inline("Explain All Options", b"cmp:options")])
+
+            buttons.append([Button.inline("Try Again", b"cmp:rretry"),
+
+                            _btn_back("Back", b"cmp:back_dist" if data.get("messages") else b"cmp:back_accounts")])
+
+            buttons.append([_cancel_button()])
+
+            await _render(event, _reason_prompt_text(data), buttons=buttons)
+
+            return
+
+
+
+        options = [
+
+            {"text": "📢 Spam", "option": "39"},
+
+            {"text": "🎭 Scam or fraud", "option": "37"},
+
+            {"text": "🩸 Violence", "option": "33"},
+
+            {"text": "⚠️ Child abuse", "option": "32"},
+
+            {"text": "💊 Illegal goods and services", "option": "34"},
+
+            {"text": "🔞 Illegal adult content", "option": "35"},
+
+            {"text": "🪪 Personal data", "option": "36"},
+
+            {"text": "©️ Copyright", "option": "38"},
+
+            {"text": "📝 Other", "option": "61"},
+
+        ]
+
+        prompt_title = "**Telegram Message Report Reasons**"
+
+        prompt_desc = "Select one or more real Telegram report reasons below."
+
+
+
+    data["reason_pages"] = [options]
 
     data["reason_page"] = 0
 
@@ -1910,7 +2046,7 @@ async def show_reason_prompt(event, data: dict):
 
     _save_flow(event.sender_id, data)
 
-    buttons = report_option_buttons(standard_options, "cmp:ropt")
+    buttons = report_option_buttons(options, "cmp:ropt")
 
     buttons.append([Button.inline("Explain All Options", b"cmp:options")])
 
@@ -1920,9 +2056,9 @@ async def show_reason_prompt(event, data: dict):
 
         event,
 
-        "**Telegram Report Reasons**\n\n"
+        f"{prompt_title}\n\n"
 
-        "Select one or more real Telegram report reasons below.\n"
+        f"{prompt_desc}\n"
 
         "After selecting, tap ✅ Continue to proceed to account assignment.",
 
@@ -3016,27 +3152,97 @@ async def show_account_reason_picker(event, campaign_id: int, phone: str):
 
         return
 
-    reasons_list = [
+    ttype = campaign.get("target_type") or "channel_msgs"
 
-        ("spam", "Spam"),
+    if "pfp" in ttype:
 
-        ("fake", "Scam or Fraud"),
+        reasons_list = [
 
-        ("violence", "Violence"),
+            ("pornography", "🔞 Pornography"),
 
-        ("child_abuse", "Child Abuse"),
+            ("child_abuse", "⚠️ Child Abuse"),
 
-        ("illegal_drugs", "Illegal Goods & Services"),
+            ("violence", "🩸 Violence"),
 
-        ("pornography", "Illegal Adult Content"),
+            ("personal_details", "🪪 Personal Details"),
 
-        ("personal_details", "Personal Data"),
+            ("copyright", "©️ Copyright"),
 
-        ("copyright", "Copyright"),
+            ("other", "📝 Other"),
 
-        ("other", "Other"),
+        ]
 
-    ]
+    elif ttype == "channel_peer":
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Fake Channel"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("illegal_drugs", "💊 Illegal Drugs"),
+
+            ("pornography", "🔞 Adult Content"),
+
+            ("personal_details", "🪪 Personal Details"),
+
+            ("copyright", "©️ Copyright"),
+
+            ("geo_irrelevant", "📍 Geo Irrelevant"),
+
+            ("other", "📝 Other"),
+
+        ]
+
+    elif ttype == "group_peer":
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Fake / Scam"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("pornography", "🔞 Pornography"),
+
+            ("illegal_drugs", "💊 Illegal Drugs"),
+
+            ("personal_details", "🪪 Personal Details"),
+
+            ("other", "📝 Other"),
+
+        ]
+
+    else:
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Scam or Fraud"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("illegal_drugs", "💊 Illegal Goods & Services"),
+
+            ("pornography", "🔞 Illegal Adult Content"),
+
+            ("personal_details", "🪪 Personal Data"),
+
+            ("copyright", "©️ Copyright"),
+
+            ("other", "📝 Other"),
+
+        ]
 
     text = (
 
@@ -3524,27 +3730,97 @@ async def show_wizard_account_reason_picker(event, data: dict, phone: str):
 
     buttons.append([Button.inline("--- Or Pick From All Reasons ---", b"cmp:noop")])
 
-    reasons_list = [
+    ttype = data.get("target_type") or "channel_msgs"
 
-        ("spam", "Spam"),
+    if "pfp" in ttype:
 
-        ("fake", "Scam or Fraud"),
+        reasons_list = [
 
-        ("violence", "Violence"),
+            ("pornography", "🔞 Pornography"),
 
-        ("child_abuse", "Child Abuse"),
+            ("child_abuse", "⚠️ Child Abuse"),
 
-        ("illegal_drugs", "Illegal Goods & Services"),
+            ("violence", "🩸 Violence"),
 
-        ("pornography", "Illegal Adult Content"),
+            ("personal_details", "🪪 Personal Details"),
 
-        ("personal_details", "Personal Data"),
+            ("copyright", "©️ Copyright"),
 
-        ("copyright", "Copyright"),
+            ("other", "📝 Other"),
 
-        ("other", "Other"),
+        ]
 
-    ]
+    elif ttype == "channel_peer":
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Fake Channel"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("illegal_drugs", "💊 Illegal Drugs"),
+
+            ("pornography", "🔞 Adult Content"),
+
+            ("personal_details", "🪪 Personal Details"),
+
+            ("copyright", "©️ Copyright"),
+
+            ("geo_irrelevant", "📍 Geo Irrelevant"),
+
+            ("other", "📝 Other"),
+
+        ]
+
+    elif ttype == "group_peer":
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Fake / Scam"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("pornography", "🔞 Pornography"),
+
+            ("illegal_drugs", "💊 Illegal Drugs"),
+
+            ("personal_details", "🪪 Personal Details"),
+
+            ("other", "📝 Other"),
+
+        ]
+
+    else:
+
+        reasons_list = [
+
+            ("spam", "📢 Spam"),
+
+            ("fake", "🎭 Scam or Fraud"),
+
+            ("violence", "🩸 Violence"),
+
+            ("child_abuse", "⚠️ Child Abuse"),
+
+            ("illegal_drugs", "💊 Illegal Goods & Services"),
+
+            ("pornography", "🔞 Illegal Adult Content"),
+
+            ("personal_details", "🪪 Personal Data"),
+
+            ("copyright", "©️ Copyright"),
+
+            ("other", "📝 Other"),
+
+        ]
 
     row = []
 
