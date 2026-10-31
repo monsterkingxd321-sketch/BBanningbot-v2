@@ -10,6 +10,7 @@ from utils.helpers import is_user_authorized, scrape_recent_messages, detect_pee
 from utils.report_options import load_report_choices
 from utils.review_utils import redact_sensitive
 from handlers.report_ui import (
+    message_reason_buttons,
     count_buttons,
     scrape_buttons,
     delay_buttons,
@@ -203,7 +204,7 @@ async def show_manual_target_prompt(event, send: bool = True):
 
 
 async def show_target_type(event, data: dict, send: bool = True):
-    """Ask whether to report profile, messages, or profile media tailored to entity type."""
+    """Ask whether to report whole peer via 3-Dots, messages, or avatar profile photo/video."""
     user_id = event.sender_id
     target = str(data.get('target', '')).strip()
 
@@ -218,52 +219,66 @@ async def show_target_type(event, data: dict, send: bool = True):
 
     if peer_type == 'user':
         text = (
-            "**Step 2/6 - Target Options (User Account)**\n\n"
+            "**Step 2/6 - User Account Options**\n\n"
             f"Target: `{target}`\n"
-            f"Detected: **User Profile**\n\n"
-            "Choose what you want to report:"
+            "Detected: **Telegram User Account**\n\n"
+            "Choose what you want to report:\n"
+            "• **Entire User Account**: Report user via 3-Dots Menu (Fake/Spam/Scam)\n"
+            "• **User Messages**: Report specific messages sent by this user\n"
+            "• **Profile Photo / Video**: Report user avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("👤 Report User Profile", b"target_peer_user")],
+            [Button.inline("👤 Report User Account (3-Dots)", b"target_peer_user")],
+            [Button.inline("💬 Report User Messages", b"target_messages")],
             [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
         ]
     elif peer_type == 'bot':
         text = (
-            "**Step 2/6 - Target Options (Bot)**\n\n"
+            "**Step 2/6 - Bot Options**\n\n"
             f"Target: `{target}`\n"
-            f"Detected: **Telegram Bot**\n\n"
-            "Choose what you want to report:"
+            "Detected: **Telegram Bot**\n\n"
+            "Choose what you want to report:\n"
+            "• **Entire Bot**: Report bot via 3-Dots Menu (Scam/Spam etc.)\n"
+            "• **Bot Messages**: Report specific messages sent by this bot\n"
+            "• **Profile Photo / Video**: Report bot avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("🤖 Report Bot Profile", b"target_peer_bot")],
-            [Button.inline("🖼️ Report Bot Profile Photo", b"target_pfp")],
+            [Button.inline("🤖 Report Bot (3-Dots)", b"target_peer_bot")],
+            [Button.inline("💬 Report Bot Messages", b"target_messages")],
+            [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
         ]
     elif peer_type == 'group':
         text = (
-            "**Step 2/6 - Target Options (Group / Chat)**\n\n"
+            "**Step 2/6 - Group Options**\n\n"
             f"Target: `{target}`\n"
-            f"Detected: **Group / Supergroup**\n\n"
-            "Choose what you want to report:"
+            "Detected: **Group / Supergroup**\n\n"
+            "Choose what you want to report:\n"
+            "• **Entire Group**: Report whole group via 3-Dots Menu\n"
+            "• **Group Messages**: Report specific chat messages\n"
+            "• **Profile Photo / Video**: Report group avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("👥 Report Group Profile", b"target_peer_group"),
-             Button.inline("💬 Group Messages", b"target_messages")],
-            [Button.inline("🖼️ Report Group Photo", b"target_pfp")],
+            [Button.inline("👥 Report Entire Group (3-Dots)", b"target_peer_group")],
+            [Button.inline("💬 Report Group Messages", b"target_messages")],
+            [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
         ]
     elif peer_type == 'channel':
         text = (
-            "**Step 2/6 - Target Options (Channel)**\n\n"
+            "**Step 2/6 - Channel Options**\n\n"
             f"Target: `{target}`\n"
-            f"Detected: **Telegram Channel**\n\n"
-            "Choose what you want to report:"
+            "Detected: **Telegram Channel**\n\n"
+            "Choose what you want to report:\n"
+            "• **Entire Channel**: Report whole channel via 3-Dots Menu\n"
+            "• **Channel Messages**: Report specific posts / messages\n"
+            "• **Profile Photo / Video**: Report channel avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("📢 Report Channel Profile", b"target_peer_channel"),
-             Button.inline("💬 Channel Messages", b"target_messages")],
-            [Button.inline("🖼️ Report Channel Photo", b"target_pfp")],
+            [Button.inline("📢 Report Entire Channel (3-Dots)", b"target_peer_channel")],
+            [Button.inline("💬 Report Channel Messages", b"target_messages")],
+            [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
         ]
     else:
@@ -856,129 +871,33 @@ async def show_comment_choice(event, data: dict, send: bool = True, peer: bool =
 
 
 async def show_message_reason_step(event, data: dict, send: bool = True):
-
-    """Load the exact first page of report reasons from Telegram."""
-
+    """Show the real official Telegram report reasons for messages."""
     user_id = event.sender_id
-
     target = data.get("target") or ""
-
     messages = data.get("messages") or []
-
     if not messages:
-
         await _send_or_edit(
-
             event,
-
             "No message link is available for this report. Start again.",
-
             nav_buttons(),
-
             send=send,
-
         )
-
         return
 
-
-
-    progress = await _send_or_edit(
-
-        event,
-
-        "Loading the exact report reasons from Telegram...",
-
-        send=send,
-
-    )
-
-    result = await load_report_choices(None, target, messages[0], option_bytes=b"")
-
-
-
-    if result.get("kind") == "choose" and result.get("options"):
-
-        data["reason_pages"] = [result["options"]]
-
-        data["reason_page"] = 0
-
-        data["reason"] = ""
-
-        data["reason_detail"] = ""
-
-        data["reason_option"] = ""
-
-        data["reason_pending_option"] = ""
-
-        data["comment_required"] = False
-
-        db.set_user_state(user_id, "report_reason", data)
-
-        text = (
-
-            "**Step 6/6 - Report Reason**\n\n"
-
-            f"Target: `{target}`\n\n"
-
-            "These are the exact report reasons returned by Telegram. Choose "
-
-            "one reason. If Telegram returns more options, they are shown next."
-
-        )
-
-        buttons = report_option_buttons(result["options"], "reason_opt")
-
-        buttons.append([Button.inline("Try Again", b"reason_retry")])
-
-        buttons.append([Button.inline("Main Menu", b"menu:home")])
-
-        try:
-
-            await progress.edit(text, buttons=buttons)
-
-        except Exception:
-
-            await event.respond(text, buttons=buttons)
-
-        return
-
-
-
-    error = result.get("error") or "Telegram did not return any report reasons."
-
+    data["reason"] = ""
+    data["reason_detail"] = ""
+    data["reason_option"] = ""
+    data["comment_required"] = False
     db.set_user_state(user_id, "report_reason", data)
 
     text = (
-
-        "**Telegram Report Reasons Unavailable**\n\n"
-
-        f"{error}\n\n"
-
-        "The bot only shows reasons returned by Telegram. Retry when the "
-
-        "account is connected."
-
+        "**Step 6/6 - Select Message Report Reason**\n\n"
+        f"Target: `{target}`\n"
+        f"Messages to report: {len(messages)}\n\n"
+        "Choose one of the official Telegram report reasons:"
     )
-
-    buttons = [
-
-        [Button.inline("Try Again", b"reason_retry")],
-
-        [Button.inline("Main Menu", b"menu:home")],
-
-    ]
-
-    try:
-
-        await progress.edit(text, buttons=buttons)
-
-    except Exception:
-
-        await event.respond(text, buttons=buttons)
-
-
-
+    buttons = message_reason_buttons()
+    await _send_or_edit(event, text, with_nav(buttons), send=send)
 
 
 async def show_stored_reason_page(event, data: dict):

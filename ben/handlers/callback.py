@@ -784,6 +784,20 @@ async def _route_callback(event, user_id: int, data: str):
             ],
         )
 
+    elif data.startswith("reason_") and not data.startswith("reason_opt:") and data not in ("reason_retry", "reason_skip", "reason_back"):
+        reason = data.split('_', 1)[1]
+        state, data_state = db.get_user_state(user_id)
+        if not data_state:
+            await event.edit(
+                "Report session expired. Start again from the menu.",
+                buttons=[[Button.inline("Main Menu", b"menu:home")]],
+            )
+            return
+        data_state['reason'] = reason
+        data_state['reason_detail'] = ""
+        db.set_user_state(user_id, "confirming", data_state)
+        await confirm_report(event, reason)
+
     elif data.startswith("pfp_reason_"):
         reason = data.split('_', 2)[2]
         state, data_state = db.get_user_state(user_id)
