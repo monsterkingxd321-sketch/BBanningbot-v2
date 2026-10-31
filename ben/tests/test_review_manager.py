@@ -532,5 +532,50 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(parsed.tzinfo)  # Must be naive converted to BOT_TZ
 
 
+
+
+class TargetAndReasonTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detect_peer_type(self):
+        from utils.helpers import detect_peer_type
+
+        self.assertEqual(await detect_peer_type("1234567890"), "user")
+        self.assertEqual(await detect_peer_type("tg://user?id=987654321"), "user")
+        self.assertEqual(await detect_peer_type("-1001234567890"), "channel")
+        self.assertEqual(await detect_peer_type("-123456789"), "group")
+        self.assertEqual(await detect_peer_type("https://t.me/+AbCdEfGhIjK"), "group")
+        self.assertEqual(await detect_peer_type("test_support_bot"), "bot")
+
+    def test_official_reasons_per_entity_type(self):
+        from handlers.report_ui import (
+            PFP_REASON_CHOICES,
+            USER_REASON_CHOICES,
+            BOT_REASON_CHOICES,
+            GROUP_REASON_CHOICES,
+            CHANNEL_REASON_CHOICES,
+            pfp_reason_buttons,
+            user_reason_buttons,
+            bot_reason_buttons,
+            group_reason_buttons,
+            channel_reason_buttons,
+            peer_reason_buttons,
+        )
+
+        pfp_keys = [k for k, _, _ in PFP_REASON_CHOICES]
+        self.assertEqual(pfp_keys, ["pornography", "child_abuse", "violence", "personal_details", "copyright", "other"])
+        self.assertNotIn("fake", pfp_keys)
+        self.assertNotIn("geo_irrelevant", pfp_keys)
+
+        user_keys = [k for k, _, _ in USER_REASON_CHOICES]
+        self.assertEqual(user_keys, ["fake", "spam", "violence", "child_abuse", "pornography", "illegal_drugs", "personal_details", "other"])
+
+        chan_keys = [k for k, _, _ in CHANNEL_REASON_CHOICES]
+        self.assertIn("copyright", chan_keys)
+        self.assertIn("geo_irrelevant", chan_keys)
+
+        self.assertTrue(len(pfp_reason_buttons()) > 0)
+        self.assertTrue(len(user_reason_buttons()) > 0)
+        self.assertTrue(len(peer_reason_buttons("pfp")) > 0)
+        self.assertTrue(len(peer_reason_buttons("user")) > 0)
+
 if __name__ == "__main__":
     unittest.main()

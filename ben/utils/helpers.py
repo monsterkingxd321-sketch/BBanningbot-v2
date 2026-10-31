@@ -608,12 +608,101 @@ async def scrape_recent_messages(target: str, limit: int = 10, phone: str = None
         raise last_error
     raise Exception("No active account was able to fetch messages.")
 
+async def detect_peer_type(target: str) -> str:
+    """Detect whether target is 'user', 'bot', 'group', or 'channel'.
+    
+    Returns 'user', 'bot', 'group', 'channel', or 'unknown'.
+    """
+    if not target:
+        return 'unknown'
+    s = str(target).strip()
+    if "tg://user?id=" in s:
+        return 'user'
+    if s.isdigit():
+        return 'user'
+    if s.startswith('-100') and s[4:].isdigit():
+        return 'channel'
+    if s.startswith('-') and s[1:].isdigit():
+        return 'group'
+
+    s_lower = s.lower()
+    if 't.me/+' in s_lower or 'joinchat/' in s_lower or s.startswith('+') or 'tg://join' in s_lower:
+        return 'group'
+
+    clean = s
+    if '://' in clean:
+        clean = clean.split('://', 1)[1]
+    if clean.lower().startswith(('t.me/', 'telegram.me/')):
+        clean = clean.split('/', 1)[1]
+    clean = clean.split('?')[0].split('#')[0].strip('/')
+    if '/' in clean:
+        clean = clean.split('/')[0]
+    if clean.startswith('@'):
+        clean = clean[1:]
+
+    if not clean:
+        return 'unknown'
+
+    if clean.lower().endswith('bot'):
+        return 'bot'
+
+    # Try resolving via bot entity to check exact type
+    try:
+        from bot import bot
+        entity = await bot.get_entity(clean)
+        if getattr(entity, 'bot', False):
+            return 'bot'
+        if getattr(entity, 'broadcast', False):
+            return 'channel'
+        if getattr(entity, 'megagroup', False) or getattr(entity, 'gigagroup', False) or type(entity).__name__ in ('Chat', 'ChatForbidden'):
+            return 'group'
+        if type(entity).__name__ in ('User', 'UserEmpty'):
+            return 'user'
+        if getattr(entity, 'megagroup', False) is False and getattr(entity, 'broadcast', False) is False:
+            return 'group'
+    except Exception:
+        pass
+
+    # Try resolving via an active account client if available
+    try:
+        active_accounts = db.get_active_accounts()
+        if active_accounts:
+            acc = active_accounts[0]
+            phone, session_file = acc[1], acc[2]
+            session_path = resolve_session_path(session_file, phone)
+            if session_path:
+                proxy_tuple = get_telethon_proxy(acc[4], acc[5], acc[6], acc[7], acc[8])
+                base_session = session_path[:-8] if session_path.lower().endswith('.session') else session_path
+                client = TelegramClient(base_session, API_ID, API_HASH, proxy=proxy_tuple)
+                await client.connect()
+                try:
+                    entity = await client.get_entity(clean)
+                    if getattr(entity, 'bot', False):
+                        return 'bot'
+                    if getattr(entity, 'broadcast', False):
+                        return 'channel'
+                    if getattr(entity, 'megagroup', False) or getattr(entity, 'gigagroup', False) or type(entity).__name__ in ('Chat', 'ChatForbidden'):
+                        return 'group'
+                    if type(entity).__name__ in ('User', 'UserEmpty'):
+                        return 'user'
+                finally:
+                    await client.disconnect()
+    except Exception:
+        pass
+
+    return 'unknown'
+
+
 async def get_target_profile_photos(target: str, limit: int = 10) -> list:
-    """Fetch profile photos for target using an active connected account."""
+    """Fetch profile photos for target using an active connected account or bot fallback."""
     active_accounts = db.get_active_accounts()
-    if not active_accounts:
-        return []
-    for account in active_accounts:
+    s = str(target).strip()
+    if "tg://user?id=" in s:
+        s = s.split("id=")[1].split("&")[0]
+    if s.startswith('@'):
+        s = s[1:]
+
+    for account in (active_accounts or []):
         phone, session_file = account[1], account[2]
         session_path = resolve_session_path(session_file, phone)
         if not session_path:
@@ -625,19 +714,41 @@ async def get_target_profile_photos(target: str, limit: int = 10) -> list:
             await client.connect()
             if not await client.is_user_authorized():
                 continue
-            s = str(target).strip()
-            if s.startswith('@'):
-                s = s[1:]
-            if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+            entity = None
+            if s.isdigit():
+                uid = int(s)
+                try:
+                    entity = await client.get_entity(uid)
+                except Exception:
+                    try:
+                        from telethon.tl.types import PeerUser
+                        entity = await client.get_entity(PeerUser(uid))
+                    except Exception:
+                        pass
+                if entity is None:
+                    try:
+                        from bot import bot
+                        bot_ent = await bot.get_entity(uid)
+                        if getattr(bot_ent, 'username', None):
+                            entity = await client.get_entity(bot_ent.username)
+                        else:
+                            entity = bot_ent
+                    except Exception:
+                        pass
+            elif s.startswith('-') and s[1:].isdigit():
                 try:
                     entity = await client.get_entity(int(s))
                 except Exception:
-                    from telethon.tl.types import PeerUser
-                    entity = await client.get_entity(PeerUser(int(s)))
+                    pass
             else:
-                entity = await client.get_entity(s)
-            photos = await client.get_profile_photos(entity, limit=limit)
-            return list(photos or [])
+                try:
+                    entity = await client.get_entity(s)
+                except Exception:
+                    pass
+            if entity is not None:
+                photos = await client.get_profile_photos(entity, limit=limit)
+                if photos:
+                    return list(photos)
         except Exception as e:
             log_activity(f"Error fetching profile photos with {phone}: {e}")
         finally:
@@ -645,6 +756,17 @@ async def get_target_profile_photos(target: str, limit: int = 10) -> list:
                 await client.disconnect()
             except Exception:
                 pass
+
+    # Fallback to bot client if user accounts returned no photos or failed
+    try:
+        from bot import bot
+        target_val = int(s) if s.isdigit() or (s.startswith('-') and s[1:].isdigit()) else s
+        photos = await bot.get_profile_photos(target_val, limit=limit)
+        if photos:
+            return list(photos)
+    except Exception:
+        pass
+
     return []
 
 class ReportEngine:
@@ -852,7 +974,20 @@ class ReportEngine:
         """Report a profile photo or video of an entity"""
         try:
             input_photo = utils.get_input_photo(photo)
-            entity = await client.get_input_entity(peer)
+            try:
+                entity = await client.get_input_entity(peer)
+            except Exception:
+                s_pid = str(getattr(peer, 'id', peer)).strip()
+                if "tg://user?id=" in s_pid:
+                    s_pid = s_pid.split("id=")[1].split("&")[0]
+                if s_pid.isdigit():
+                    entity = types.InputPeerUser(int(s_pid), access_hash=getattr(peer, 'access_hash', 0))
+                elif s_pid.startswith("-100") and s_pid[4:].isdigit():
+                    entity = types.InputPeerChannel(int(s_pid[4:]), access_hash=getattr(peer, 'access_hash', 0))
+                elif s_pid.startswith("-") and s_pid[1:].isdigit():
+                    entity = types.InputPeerChat(int(s_pid[1:]))
+                else:
+                    entity = peer
             reason_obj = self._get_reason_obj(reason)
             from telethon.errors import FloodWaitError
             for attempt in range(2):
@@ -893,7 +1028,20 @@ class ReportEngine:
             from telethon.errors import FloodWaitError
             for attempt in range(2):
                 try:
-                    input_peer = await client.get_input_entity(entity)
+                    try:
+                        input_peer = await client.get_input_entity(entity)
+                    except Exception:
+                        s_pid = str(peer_id).strip()
+                        if "tg://user?id=" in s_pid:
+                            s_pid = s_pid.split("id=")[1].split("&")[0]
+                        if s_pid.isdigit():
+                            input_peer = types.InputPeerUser(int(s_pid), access_hash=getattr(entity, 'access_hash', 0))
+                        elif s_pid.startswith("-100") and s_pid[4:].isdigit():
+                            input_peer = types.InputPeerChannel(int(s_pid[4:]), access_hash=getattr(entity, 'access_hash', 0))
+                        elif s_pid.startswith("-") and s_pid[1:].isdigit():
+                            input_peer = types.InputPeerChat(int(s_pid[1:]))
+                        else:
+                            input_peer = entity
                     await client(ReportPeerRequest(
                         peer=input_peer,
                         reason=reason_obj,
@@ -937,6 +1085,15 @@ class ReportEngine:
                 return await client.get_entity(int(s))
             return await client.get_entity(s)
         except Exception:
+            if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+                try:
+                    from bot import bot
+                    bot_ent = await bot.get_entity(int(s))
+                    if getattr(bot_ent, 'username', None):
+                        return await client.get_entity(bot_ent.username)
+                    return bot_ent
+                except Exception:
+                    pass
             try:
                 if s.isdigit():
                     from telethon.tl.types import PeerUser
@@ -1743,9 +1900,12 @@ class ReportEngine:
                 await set_account_online(client, offline=False)
 
                 try:
-                    kind, _ = parse_target_identifier(target)
-                    if kind in ("invite", "username", "id"):
-                        await ensure_account_joined(client, target)
+                    s_t = str(target).strip()
+                    is_user_t = s_t.isdigit() or "tg://user?id=" in s_t
+                    if not is_user_t:
+                        kind, _ = parse_target_identifier(target)
+                        if kind == "invite":
+                            await ensure_account_joined(client, target)
                 except Exception:
                     pass
 
@@ -1873,9 +2033,12 @@ class ReportEngine:
                 await set_account_online(client, offline=False)
 
                 try:
-                    kind, _ = parse_target_identifier(target)
-                    if kind in ("invite", "username", "id"):
-                        await ensure_account_joined(client, target)
+                    s_t = str(target).strip()
+                    is_user_t = s_t.isdigit() or "tg://user?id=" in s_t
+                    if not is_user_t:
+                        kind, _ = parse_target_identifier(target)
+                        if kind == "invite":
+                            await ensure_account_joined(client, target)
                 except Exception:
                     pass
 

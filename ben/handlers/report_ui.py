@@ -1,16 +1,89 @@
 """Reusable inline keyboards and Telegram report-reason metadata.
 
-Telegram exposes ten real report reason types. Their display names below are the
-official English names used by Telegram clients. Telegram decides whether a
-reason has further options; those options are fetched from Telegram at runtime
-and are never invented locally.
+Telegram exposes report reasons tailored to the target type (Profile Photo, User,
+Bot, Group, Channel, Message). Their display names below are the official names used
+by Telegram clients.
 """
 
 from telethon import Button
-
 from config import MAX_REPORTS_PER_ACCOUNT, MIN_DELAY, MAX_DELAY
 
 
+# 1. Profile Photo / Video (PFP) Report Reasons (Official Telegram App Choices)
+PFP_REASON_CHOICES = [
+    ("pornography", "🔞 Pornography", "Adult content, nudity, or sexually explicit photo/video."),
+    ("child_abuse", "⚠️ Child Abuse", "Child sexual abuse material or exploitation."),
+    ("violence", "🩸 Violence", "Graphic violence, gore, threats, or weapons."),
+    ("personal_details", "🪪 Personal Details", "Non-consensual photo, private photos, or doxxing."),
+    ("copyright", "©️ Copyright", "Unauthorized use of copyrighted or stolen picture."),
+    ("other", "📝 Other", "Any other violation. Add details in the comment."),
+]
+
+# 2. User Account Report Reasons (Official Telegram App Choices)
+USER_REASON_CHOICES = [
+    ("fake", "🎭 Fake Account", "Impersonation, scams, identity theft, or deceptive profile."),
+    ("spam", "📢 Spam", "Mass messaging, unwanted advertising, or automated spam."),
+    ("violence", "🩸 Violence", "Threats of violence, encouragement of harm, or violent extremism."),
+    ("child_abuse", "⚠️ Child Abuse", "Child exploitation, abuse, or illegal material involving minors."),
+    ("pornography", "🔞 Pornography", "Sharing adult content or non-consensual sexual material."),
+    ("illegal_drugs", "💊 Illegal Drugs", "Selling, buying, or promoting illegal drugs or substances."),
+    ("personal_details", "🪪 Personal Details", "Doxxing, leaking phone numbers, IDs, or private data."),
+    ("other", "📝 Other", "Other rule violations. Provide explanation in the comment."),
+]
+
+# 3. Bot Report Reasons (Official Telegram App Choices)
+BOT_REASON_CHOICES = [
+    ("fake", "🎭 Fake / Scam", "Impersonating official entities, phishing, or scamming users."),
+    ("spam", "📢 Spam", "Spam broadcasts, unsolicited adverts, or flooding chats."),
+    ("violence", "🩸 Violence", "Threats, violence, or dangerous content."),
+    ("child_abuse", "⚠️ Child Abuse", "Child safety violation or illegal material."),
+    ("pornography", "🔞 Pornography", "Adult or sexually explicit content."),
+    ("illegal_drugs", "💊 Illegal Drugs", "Selling drugs, chemical substances, or contraband."),
+    ("personal_details", "🪪 Personal Details", "Distributing private records, dox data, or passwords."),
+    ("other", "📝 Other", "Any other abuse. Explain in the comment."),
+]
+
+# 4. Group (Chat) Report Reasons (Official Telegram App Choices)
+GROUP_REASON_CHOICES = [
+    ("spam", "📢 Spam", "Spam group, promotional flooding, or ad scams."),
+    ("fake", "🎭 Fake / Scam", "Scam group, fake official group, or impersonation."),
+    ("violence", "🩸 Violence", "Violent threats, physical harm, or extremism."),
+    ("child_abuse", "⚠️ Child Abuse", "Child sexual abuse or child exploitation material."),
+    ("pornography", "🔞 Pornography", "Unsolicited or non-consensual pornography."),
+    ("illegal_drugs", "💊 Illegal Drugs", "Drug dealing, distribution, or prohibited goods."),
+    ("personal_details", "🪪 Personal Details", "Doxxing, leaked personal data, or stalking."),
+    ("other", "📝 Other", "Other violations. Please specify in comment."),
+]
+
+# 5. Channel Report Reasons (Official Telegram App Choices)
+CHANNEL_REASON_CHOICES = [
+    ("spam", "📢 Spam", "Spam channel, scam links, or malicious promotion."),
+    ("fake", "🎭 Fake Channel", "Impersonating known brands, scams, or fraudulent channels."),
+    ("violence", "🩸 Violence", "Graphic violence, warfare gore, or terrorist content."),
+    ("child_abuse", "⚠️ Child Abuse", "Child safety violations or exploitation."),
+    ("pornography", "🔞 Pornography", "Adult material where prohibited."),
+    ("illegal_drugs", "💊 Illegal Drugs", "Selling or trafficking narcotics or controlled goods."),
+    ("personal_details", "🪪 Personal Details", "Doxxing, leaking phone numbers, databases, or private info."),
+    ("copyright", "©️ Copyright", "Pirated movies, music, courses, or copyright violations."),
+    ("geo_irrelevant", "📍 Geo Irrelevant", "Irrelevant geographic or localized content."),
+    ("other", "📝 Other", "Other violations. Add context in comment."),
+]
+
+# 6. Specific Message Report Reasons
+MESSAGE_REASON_CHOICES = [
+    ("spam", "📢 Spam", "Spam message or unsolicited advertising."),
+    ("fake", "🎭 Fake / Scam", "Scam, phishing, or fraudulent message."),
+    ("violence", "🩸 Violence", "Violent threat or incitement."),
+    ("child_abuse", "⚠️ Child Abuse", "Child exploitation material."),
+    ("pornography", "🔞 Pornography", "Adult sexual content."),
+    ("illegal_drugs", "💊 Illegal Drugs", "Drug promotion or sales."),
+    ("personal_details", "🪪 Personal Details", "Doxxing or private information."),
+    ("copyright", "©️ Copyright", "Copyrighted media."),
+    ("geo_irrelevant", "📍 Geo Irrelevant", "Geographically irrelevant content."),
+    ("other", "📝 Other", "Other violation."),
+]
+
+# Master choices retained for backward compatibility
 REPORT_REASON_CHOICES = [
     ("spam", "Spam", "Unsolicited advertising, mass messaging or automated spam."),
     ("fake", "Fake Account", "Scams, impersonation or a deceptive account."),
@@ -38,6 +111,7 @@ def reason_key_from_label(label: str, fallback: str = "other") -> str:
         return REASON_KEYS_BY_LABEL[value]
     aliases = {
         "fake account": "fake",
+        "fake": "fake",
         "scam": "fake",
         "scam or fraud": "fake",
         "child abuse": "child_abuse",
@@ -126,12 +200,13 @@ def comment_buttons(peer: bool = False):
     ]
 
 
-def _reason_rows(prefix: str):
+def _build_choice_rows(choices, prefix: str, per_row: int = 2):
     rows = []
     row = []
-    for key, label, _ in REPORT_REASON_CHOICES:
+    for item in choices:
+        key, label = item[0], item[1]
         row.append(Button.inline(label, f"{prefix}_{key}".encode()))
-        if len(row) == 2:
+        if len(row) == per_row:
             rows.append(row)
             row = []
     if row:
@@ -139,14 +214,49 @@ def _reason_rows(prefix: str):
     return rows
 
 
+def pfp_reason_buttons():
+    """Reasons specific to Profile Photos/Videos."""
+    return _build_choice_rows(PFP_REASON_CHOICES, "pfp_reason")
+
+
+def user_reason_buttons():
+    """Reasons specific to User Accounts."""
+    return _build_choice_rows(USER_REASON_CHOICES, "peer_reason")
+
+
+def bot_reason_buttons():
+    """Reasons specific to Bots."""
+    return _build_choice_rows(BOT_REASON_CHOICES, "peer_reason")
+
+
+def group_reason_buttons():
+    """Reasons specific to Groups."""
+    return _build_choice_rows(GROUP_REASON_CHOICES, "peer_reason")
+
+
+def channel_reason_buttons():
+    """Reasons specific to Channels."""
+    return _build_choice_rows(CHANNEL_REASON_CHOICES, "peer_reason")
+
+
 def message_reason_buttons():
-    """Main reason buttons for message reports."""
-    return _reason_rows("reason")
+    """Reasons specific to Message links."""
+    return _build_choice_rows(MESSAGE_REASON_CHOICES, "reason")
 
 
-def peer_reason_buttons():
-    """Main reason buttons for whole-peer and user reports."""
-    return _reason_rows("peer_reason")
+def peer_reason_buttons(target_type: str = None):
+    """Main reason buttons for peer reports, specialized by target type."""
+    if target_type == "pfp":
+        return pfp_reason_buttons()
+    elif target_type == "user":
+        return user_reason_buttons()
+    elif target_type == "bot":
+        return bot_reason_buttons()
+    elif target_type == "group":
+        return group_reason_buttons()
+    elif target_type == "channel":
+        return channel_reason_buttons()
+    return _build_choice_rows(REPORT_REASON_CHOICES, "peer_reason")
 
 
 def report_option_buttons(options, prefix: str = "reason_opt", per_row: int = 2):
@@ -181,4 +291,7 @@ def nav_buttons(back_data: bytes = None):
 
 
 def with_nav(rows, back_data: bytes = None):
-    return list(rows) + nav_buttons(back_data)
+    out = [list(r) for r in (rows or [])]
+    for nr in nav_buttons(back_data):
+        out.append(nr)
+    return out

@@ -33,9 +33,12 @@ from handlers.report import (
     show_message_reason_step,
     show_stored_reason_page,
     show_peer_reason_step,
+    show_pfp_reason_step,
     show_pfp_mode_step,
     show_pfp_custom_prompt,
     show_pfp_count_step,
+    show_user_count_step,
+    show_peer_count_step,
 )
 from handlers.report_ui import reason_display, reason_key_from_label
 from handlers.admin import (
@@ -490,6 +493,65 @@ async def _route_callback(event, user_id: int, data: str):
             ],
         )
 
+    elif data.startswith("set_type:"):
+        chosen_type = data.split(":", 1)[1]
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['peer_type'] = chosen_type
+        data_state['type'] = chosen_type
+        await show_target_type(event, data_state, send=False)
+        return
+
+    elif data == "target_peer_user":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['type'] = 'user'
+        data_state['peer_type'] = 'user'
+        data_state['target_type'] = 'peer'
+        db.set_user_state(user_id, "report_user_count", data_state)
+        await show_user_count_step(event, data_state, send=False)
+        return
+
+    elif data == "target_peer_bot":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['type'] = 'bot'
+        data_state['peer_type'] = 'bot'
+        data_state['target_type'] = 'peer'
+        db.set_user_state(user_id, "report_user_count", data_state)
+        await show_user_count_step(event, data_state, send=False)
+        return
+
+    elif data == "target_peer_group":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['type'] = 'group'
+        data_state['peer_type'] = 'group'
+        data_state['target_type'] = 'peer'
+        db.set_user_state(user_id, "report_peer_count", data_state)
+        await show_peer_count_step(event, data_state, send=False)
+        return
+
+    elif data == "target_peer_channel":
+        state, data_state = db.get_user_state(user_id)
+        if not data_state or not data_state.get('target'):
+            await event.edit("Session expired. Start again with the menu.")
+            return
+        data_state['type'] = 'channel'
+        data_state['peer_type'] = 'channel'
+        data_state['target_type'] = 'peer'
+        db.set_user_state(user_id, "report_peer_count", data_state)
+        await show_peer_count_step(event, data_state, send=False)
+        return
+
     elif data == "target_peer":
         state, data_state = db.get_user_state(user_id)
         if not data_state or not data_state.get('target'):
@@ -500,10 +562,10 @@ async def _route_callback(event, user_id: int, data: str):
         target = str(data_state.get('target', ''))
         target_lower = target.lower()
         if (
-            't.me/+'in target_lower
-            or 'joinchat/'in target_lower
+            't.me/+' in target_lower
+            or 'joinchat/' in target_lower
             or target.strip().startswith('+')
-            or 'tg://join'in target_lower
+            or 'tg://join' in target_lower
         ):
             await event.edit(
                 "Private invite targets do not support whole-channel peer reports.\n"
@@ -514,7 +576,6 @@ async def _route_callback(event, user_id: int, data: str):
                 ],
             )
             return
-        from handlers.report import show_peer_count_step
         await show_peer_count_step(event, data_state, send=False)
 
     elif data == "scrape_recent":
@@ -722,6 +783,21 @@ async def _route_callback(event, user_id: int, data: str):
                 [Button.inline("Main Menu", b"menu:home")],
             ],
         )
+
+    elif data.startswith("pfp_reason_"):
+        reason = data.split('_', 2)[2]
+        state, data_state = db.get_user_state(user_id)
+        if not data_state:
+            await event.edit(
+                "Report session expired. Start again from the menu.",
+                buttons=[[Button.inline("Main Menu", b"menu:home")]],
+            )
+            return
+        data_state['reason'] = reason
+        data_state['reason_detail'] = ""
+        data_state['target_type'] = 'pfp'
+        db.set_user_state(user_id, "confirming_pfp", data_state)
+        await confirm_pfp_report(event, reason)
 
     elif data.startswith("peer_reason_"):
         reason_map = {
@@ -1157,7 +1233,8 @@ async def start_peer_report_session(event, reason: str):
     target = data['target']
     reports_per_account = data.get('reports_per_account', 1)
     comment = data.get('comment', '')
-    is_channel_target = 'type'not in data
+    target_type = data.get('type') or data.get('peer_type')
+    is_channel_target = target_type in ('channel', 'group')
     data['pending_reason'] = reason
     db.set_user_state(user_id, state, data)
     allowed_phones = None
