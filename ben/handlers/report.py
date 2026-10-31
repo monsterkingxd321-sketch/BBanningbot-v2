@@ -204,7 +204,7 @@ async def show_manual_target_prompt(event, send: bool = True):
 
 
 async def show_target_type(event, data: dict, send: bool = True):
-    """Ask whether to report whole peer via 3-Dots, messages, or avatar profile photo/video."""
+    """Ask whether to report 3-Dots (channels/groups only), messages, or avatar profile photo/video."""
     user_id = event.sender_id
     target = str(data.get('target', '')).strip()
 
@@ -223,12 +223,10 @@ async def show_target_type(event, data: dict, send: bool = True):
             f"Target: `{target}`\n"
             "Detected: **Telegram User Account**\n\n"
             "Choose what you want to report:\n"
-            "• **Entire User Account**: Report user via 3-Dots Menu (Fake/Spam/Scam)\n"
             "• **User Messages**: Report specific messages sent by this user\n"
             "• **Profile Photo / Video**: Report user avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("👤 Report User Account (3-Dots)", b"target_peer_user")],
             [Button.inline("💬 Report User Messages", b"target_messages")],
             [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
@@ -239,12 +237,10 @@ async def show_target_type(event, data: dict, send: bool = True):
             f"Target: `{target}`\n"
             "Detected: **Telegram Bot**\n\n"
             "Choose what you want to report:\n"
-            "• **Entire Bot**: Report bot via 3-Dots Menu (Scam/Spam etc.)\n"
             "• **Bot Messages**: Report specific messages sent by this bot\n"
             "• **Profile Photo / Video**: Report bot avatar photo(s) / video(s)"
         )
         buttons = [
-            [Button.inline("🤖 Report Bot (3-Dots)", b"target_peer_bot")],
             [Button.inline("💬 Report Bot Messages", b"target_messages")],
             [Button.inline("🖼️ Report Profile Photo / Video", b"target_pfp")],
             [Button.inline("Back", b"menu:report"), Button.inline("Main Menu", b"menu:home")],
@@ -255,7 +251,7 @@ async def show_target_type(event, data: dict, send: bool = True):
             f"Target: `{target}`\n"
             "Detected: **Group / Supergroup**\n\n"
             "Choose what you want to report:\n"
-            "• **Entire Group**: Report whole group via 3-Dots Menu\n"
+            "• **Entire Group (3-Dots)**: Report whole group via top 3-Dots Menu\n"
             "• **Group Messages**: Report specific chat messages\n"
             "• **Profile Photo / Video**: Report group avatar photo(s) / video(s)"
         )
@@ -271,7 +267,7 @@ async def show_target_type(event, data: dict, send: bool = True):
             f"Target: `{target}`\n"
             "Detected: **Telegram Channel**\n\n"
             "Choose what you want to report:\n"
-            "• **Entire Channel**: Report whole channel via 3-Dots Menu\n"
+            "• **Entire Channel (3-Dots)**: Report whole channel via top 3-Dots Menu\n"
             "• **Channel Messages**: Report specific posts / messages\n"
             "• **Profile Photo / Video**: Report channel avatar photo(s) / video(s)"
         )
